@@ -1,0 +1,87 @@
+import os
+import logging
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# MongoDB connection string and database name
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "ezchat")
+
+# MongoDB client and database objects
+client: AsyncIOMotorClient = None
+db = None
+
+
+async def connect_to_mongodb():
+    """
+    Connect to MongoDB and verify the connection.
+    """
+    global client, db
+
+    logger.info("Connecting to MongoDB...")
+    try:
+        client = AsyncIOMotorClient(MONGODB_URI)
+        # Verify the connection
+        await client.admin.command("ping")
+
+        db = client[MONGODB_DB_NAME]
+        logger.info(f"Connected to MongoDB: {MONGODB_URI}, database: {MONGODB_DB_NAME}")
+    except Exception as e:
+        logger.error(f"Failed to connect to MongoDB: {e}")
+        raise
+
+
+async def close_mongodb_connection():
+    """
+    Close the MongoDB connection.
+    """
+    global client
+
+    if client:
+        logger.info("Closing MongoDB connection...")
+        client.close()
+        logger.info("MongoDB connection closed")
+
+
+def get_database():
+    """
+    Get the database instance.
+    """
+    if db is None:
+        raise Exception("Database connection not initialized")
+    return db
+
+
+# Collection references
+def get_users_collection():
+    """
+    Get the users collection.
+    """
+    return get_database().users
+
+
+def get_conversations_collection():
+    """
+    Get the conversations collection.
+    """
+    return get_database().conversations
+
+
+def get_messages_collection():
+    """
+    Get the messages collection.
+    """
+    return get_database().messages
+
+
+def get_contacts_collection():
+    """
+    Get the contacts collection.
+    """
+    return get_database().contacts

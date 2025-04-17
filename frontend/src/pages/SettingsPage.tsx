@@ -1,0 +1,250 @@
+import { useState, FormEvent, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuthStore } from '../stores/authStore';
+import { signOut } from '../services/authService';
+import { apiClient } from '../services/apiClient';
+import toast from 'react-hot-toast';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { storage } from '../services/firebaseConfig';
+import Sidebar from '../components/Sidebar';
+
+const SettingsPage = () => {
+  const { user, setUser, logout } = useAuthStore();
+  const navigate = useNavigate();
+  
+  const [displayName, setDisplayName] = useState('');
+  const [status, setStatus] = useState<'online' | 'offline' | 'away'>('online');
+  const [isLoading, setIsLoading] = useState(false);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  
+  useEffect(() => {
+    if (user) {
+      setDisplayName(user.displayName);
+      setStatus(user.status);
+      if (user.photoURL) {
+        setAvatarPreview(user.photoURL);
+      }
+    }
+  }, [user]);
+  
+  const handleLogout = async () => {
+    try {
+      await signOut();
+      logout();
+      navigate('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+      toast.error('Failed to log out');
+    }
+  };
+  
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('File size must be less than 5MB');
+      return;
+    }
+    
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
+  };
+  
+  const uploadAvatar = async (): Promise<string | null> => {
+    if (!avatarFile || !user) return null;
+    
+    const storageRef = ref(storage, `avatars/${user.id}/${Date.now()}_${avatarFile.name}`);
+    const uploadTask = uploadBytesResumable(storageRef, avatarFile);
+    
+    return new Promise((resolve, reject) => {
+      uploadTask.on(
+        'state_changed',
+        (snapshot) => {
+          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+          setUploadProgress(progress);
+        },
+        (error) => {
+          console.error('Avatar upload error:', error);
+          reject(error);
+        },
+        async () => {
+          try {
+            const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+            resolve(downloadURL);
+          } catch (error) {
+            reject(error);
+          }
+        }
+      );
+    });
+  };
+  
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    
+    try {
+      let avatarURL = user?.photoURL;
+      
+      // Upload avatar if selected
+      if (avatarFile) {
+        avatarURL = await uploadAvatar();
+        if (!avatarURL) {
+          toast.error('Failed to upload avatar');
+          setIsLoading(false);
+          return;
+        }
+      }
+      
+      // Update user profile in API
+      const response = await apiClient.put('/user/profile', {
+        display_name: displayName,
+        status,
+        avatar_url: avatarURL,
+      });
+      
+      // Update local user state
+      if (user) {
+        setUser({
+          ...user,
+          displayName,
+          status,
+          photoURL: avatarURL || undefined,
+        });
+      }
+      
+      toast.success('Profile updated successfully');
+    } catch (error) {
+      console.error('Update profile error:', error);
+      toast.error('Failed to update profile');
+    } finally {
+      setIsLoading(false);
+      setUploadProgress(0);
+    }
+  };
+  
+  return (
+    <div className="h-full flex">
+      <Sidebar />
+      
+      <div className="flex-1 flex flex-col overflow-hidden bg-gray-50">
+        <div className="max-w-4xl mx-auto w-full px-4 py-8">
+          <div className="md:grid md:grid-cols-3 md:gap-6">
+            <div className="md:col-span-1">
+              <div className="px-4 sm:px-0">
+                <h3 className="text-lg font-medium leading-6 text-gray-900">Profile</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  Update your profile information and preferences.
+                </p>
+              </div>
+            </div>
+            
+            <div className="mt-5 md:mt-0 md:col-span-2">
+              <form onSubmit={handleSubmit}>
+                <div className="shadow sm:rounded-md sm:overflow-hidden">
+                  <div className="px-4 py-5 bg-white space-y-6 sm:p-6">
+                    {/* Avatar */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">Profile photo</label>
+                      <div className="mt-2 flex items-center space-x-5">
+                        <div className="flex-shrink-0">
+                          <div className="relative">
+                            <img
+                              className="h-16 w-16 rounded-full object-cover"
+                              src={avatarPreview || (user?.photoURL || 'https://via.placeholder.com/150')}
+                              alt="Avatar Preview"
+                            />
+                            {uploadProgress > 0 && uploadProgress < 100 && (
+                              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-full">
+                                <span className="text-white text-xs font-medium">{uploadProgress.toFixed(0)}%</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="bg-white py-2 px-3 border border-gray-300 rounded-md shadow-sm text-sm leading-4 font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                          onClick={() => document.getElementById('avatar-upload')?.click()}
+                        >
+                          Change
+                        </button>
+                        <input
+                          id="avatar-upload"
+                          name="avatar"
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleAvatarChange}
+                        />
+                      </div>
+                    </div>
+                    
+                    {/* Display Name */}
+                    <div>
+                      <label htmlFor="display-name" className="block text-sm font-medium text-gray-700">
+                        Display Name
+                      </label>
+                      <div className="mt-1">
+                        <input
+                          type="text"
+                          name="display-name"
+                          id="display-name"
+                          value={displayName}
+                          onChange={(e) => setDisplayName(e.target.value)}
+                          className="input"
+                          required
+                        />
+                      </div>
+                    </div>
+                    
+                    {/* Status */}
+                    <div>
+                      <label htmlFor="status" className="block text-sm font-medium text-gray-700">
+                        Status
+                      </label>
+                      <div className="mt-1">
+                        <select
+                          id="status"
+                          name="status"
+                          value={status}
+                          onChange={(e) => setStatus(e.target.value as 'online' | 'offline' | 'away')}
+                          className="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                        >
+                          <option value="online">Online</option>
+                          <option value="away">Away</option>
+                          <option value="offline">Offline</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="px-4 py-3 bg-gray-50 text-right sm:px-6 space-x-2">
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                    >
+                      Log out
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isLoading}
+                      className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
+                    >
+                      {isLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default SettingsPage; 
