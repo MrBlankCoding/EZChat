@@ -4,6 +4,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from bson.objectid import ObjectId
+from pydantic import BaseModel
 
 from auth.firebase import get_current_user, FirebaseToken
 from db.mongodb import get_users_collection
@@ -197,3 +198,31 @@ async def search_users(
         result_profiles.append(UserProfile(**user))
 
     return result_profiles
+
+
+class FCMTokenData(BaseModel):
+    token: str
+
+
+@router.post("/fcm-token")
+async def register_fcm_token(
+    token_data: FCMTokenData, current_user: FirebaseToken = Depends(get_current_user)
+):
+    """
+    Register the FCM token for the current user.
+    This token will be used to send push notifications to the user.
+    """
+    users_collection = get_users_collection()
+
+    try:
+        # Update the user's FCM token in the database
+        await users_collection.update_one(
+            {"firebase_uid": current_user.firebase_uid},
+            {"$set": {"fcm_token": token_data.token, "updated_at": datetime.utcnow()}},
+        )
+        return {"status": "success", "message": "FCM token registered successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to register FCM token: {str(e)}",
+        )

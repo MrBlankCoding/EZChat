@@ -7,6 +7,8 @@ import toast from 'react-hot-toast';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage } from '../services/firebaseConfig';
 import Sidebar from '../components/Sidebar';
+import notificationService from '../services/notificationService';
+import { BellIcon, BellSlashIcon } from '@heroicons/react/24/outline';
 
 const SettingsPage = () => {
   const { user, setUser, logout } = useAuthStore();
@@ -18,16 +20,26 @@ const SettingsPage = () => {
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [notificationStatus, setNotificationStatus] = useState<'granted' | 'denied' | 'default'>('default');
   
   useEffect(() => {
     if (user) {
       setDisplayName(user.displayName);
-      setStatus(user.status);
+      if (user.status) {
+        setStatus(user.status as 'online' | 'offline' | 'away');
+      }
       if (user.photoURL) {
         setAvatarPreview(user.photoURL);
       }
     }
   }, [user]);
+  
+  // Check notification permission status
+  useEffect(() => {
+    if ('Notification' in window) {
+      setNotificationStatus(Notification.permission as 'granted' | 'denied' | 'default');
+    }
+  }, []);
   
   const handleLogout = async () => {
     try {
@@ -53,8 +65,8 @@ const SettingsPage = () => {
     setAvatarPreview(URL.createObjectURL(file));
   };
   
-  const uploadAvatar = async (): Promise<string | null> => {
-    if (!avatarFile || !user) return null;
+  const uploadAvatar = async (): Promise<string | undefined> => {
+    if (!avatarFile || !user) return undefined;
     
     const storageRef = ref(storage, `avatars/${user.id}/${Date.now()}_${avatarFile.name}`);
     const uploadTask = uploadBytesResumable(storageRef, avatarFile);
@@ -80,6 +92,39 @@ const SettingsPage = () => {
         }
       );
     });
+  };
+  
+  // Request notification permission
+  const requestPermission = async () => {
+    try {
+      const permissionGranted = await notificationService.requestPermission();
+      if (permissionGranted) {
+        setNotificationStatus('granted');
+        await notificationService.getToken();
+        toast.success('Notifications enabled successfully');
+      } else {
+        setNotificationStatus('denied');
+        toast.error('Notification permission denied');
+      }
+    } catch (error) {
+      console.error('Error requesting notification permission:', error);
+      toast.error('Failed to enable notifications');
+    }
+  };
+  
+  // Send a test notification
+  const sendTestNotification = () => {
+    try {
+      notificationService.displayNotification({
+        title: 'Test Notification',
+        body: 'This is a test notification from EZChat.',
+        icon: '/icons/app-icon-192.png'
+      });
+      toast.success('Test notification sent');
+    } catch (error) {
+      console.error('Error sending test notification:', error);
+      toast.error('Failed to send test notification');
+    }
   };
   
   const handleSubmit = async (e: FormEvent) => {
@@ -112,7 +157,7 @@ const SettingsPage = () => {
           ...user,
           displayName,
           status,
-          photoURL: avatarURL || undefined,
+          photoURL: avatarURL,
         });
       }
       
@@ -239,6 +284,71 @@ const SettingsPage = () => {
                   </div>
                 </div>
               </form>
+            </div>
+          </div>
+          
+          {/* Notifications Section */}
+          <div className="mt-10 md:grid md:grid-cols-3 md:gap-6">
+            <div className="md:col-span-1">
+              <div className="px-4 sm:px-0">
+                <h3 className="text-lg font-medium leading-6 text-gray-900">Notifications</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  Manage how you receive notifications.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 md:mt-0 md:col-span-2">
+              <div className="shadow sm:rounded-md sm:overflow-hidden">
+                <div className="px-4 py-5 bg-white space-y-6 sm:p-6">
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-900">Push Notifications</h4>
+                    <div className="mt-2 flex items-center justify-between">
+                      <p className="text-sm text-gray-500">
+                        Receive notifications when you get new messages and are not actively using the app.
+                      </p>
+                      
+                      <div>
+                        {notificationStatus === 'granted' ? (
+                          <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
+                            <BellIcon className="h-4 w-4 mr-1" />
+                            Enabled
+                          </span>
+                        ) : notificationStatus === 'denied' ? (
+                          <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800">
+                            <BellSlashIcon className="h-4 w-4 mr-1" />
+                            Blocked
+                          </span>
+                        ) : (
+                          <button 
+                            onClick={requestPermission}
+                            className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800 hover:bg-blue-200"
+                          >
+                            <BellIcon className="h-4 w-4 mr-1" />
+                            Enable
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* Test Notification Button */}
+                    {notificationStatus === 'granted' && (
+                      <button
+                        type="button"
+                        onClick={sendTestNotification}
+                        className="mt-4 inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                      >
+                        Send Test Notification
+                      </button>
+                    )}
+                    
+                    {notificationStatus === 'denied' && (
+                      <div className="mt-2 text-sm text-red-500">
+                        You've blocked notifications. Please update your browser settings to enable them.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

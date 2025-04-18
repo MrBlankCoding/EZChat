@@ -14,7 +14,7 @@ from fastapi import (
 from starlette.websockets import WebSocketState
 from websockets.exceptions import ConnectionClosed
 
-from db.mongodb import get_messages_collection
+from db.mongodb import get_messages_collection, get_users_collection
 from auth.firebase import FirebaseToken
 from schemas.message import MessageStatus, MessageResponse
 from utils.rate_limiter import RateLimiter
@@ -32,6 +32,7 @@ from .protocol import (
     EditMessage,
     DeleteMessage,
 )
+from utils.notifications import send_new_message_notification
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -291,7 +292,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                         logger.warning(f"Error updating conversation: {e}")
                         # Continue anyway as the message is already stored
 
-                    # Send message to recipient if they are connected
+                    # Send message to recipient
                     recipient_received = False
                     if to_user in connection_manager.active_connections:
                         try:
@@ -301,6 +302,28 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                             recipient_received = True
                         except Exception as e:
                             logger.error(f"Error sending message to recipient: {e}")
+                    else:
+                        # Recipient is not connected, send a push notification
+                        try:
+                            # Get recipient information for the notification
+                            users_collection = get_users_collection()
+                            sender = await users_collection.find_one(
+                                {"firebase_uid": from_user}
+                            )
+
+                            if sender:
+                                sender_name = sender.get("display_name", "Someone")
+
+                                # Send the notification
+                                await send_new_message_notification(
+                                    to_user,
+                                    sender_name,
+                                    message_obj.text,
+                                    message_id,
+                                    from_user,
+                                )
+                        except Exception as e:
+                            logger.error(f"Error sending push notification: {e}")
 
                     # Send delivery receipt to sender
                     if recipient_received:

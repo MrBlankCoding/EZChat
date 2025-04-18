@@ -79,7 +79,18 @@ const useChatStore = create<ChatState>((set, get) => ({
     if (conversations[contactId]) {
       // If we already have a conversation, mark it as read if unread
       if (conversations[contactId]?.isUnread) {
-        get().markConversationAsUnread(contactId, false);
+        get().markMessagesAsRead(contactId);
+      }
+      
+      // Mark any unread messages from the contact as read
+      const unreadMessages = conversations[contactId]?.messages.filter(
+        msg => msg.senderId === contactId && msg.status !== 'read'
+      );
+      
+      if (unreadMessages && unreadMessages.length > 0) {
+        // Send read receipts for visible messages
+        const lastMessage = unreadMessages[unreadMessages.length - 1];
+        websocketService.sendReadReceipt(contactId, lastMessage.id);
       }
     } else {
       // Create an empty conversation entry and fetch messages
@@ -210,8 +221,12 @@ const useChatStore = create<ChatState>((set, get) => ({
     
     set({ conversations: updatedConversations });
     
+    // Send read receipt if message is from contact and conversation is active
     if (activeConversationId === contactId && message.senderId !== user.id) {
-      websocketService.sendReadReceipt(contactId, message.id);
+      // Only send read receipts if the tab is active/visible
+      if (document && document.visibilityState === 'visible') {
+        websocketService.sendReadReceipt(contactId, message.id);
+      }
     }
   },
   
@@ -222,24 +237,40 @@ const useChatStore = create<ChatState>((set, get) => ({
       
       if (!conversation?.messages.length) return;
       
-      const lastMessage = conversation.messages[conversation.messages.length - 1];
+      // Get all unread messages from this contact
+      const unreadMessages = conversation.messages.filter(
+        msg => msg.senderId === contactId && msg.status !== 'read'
+      );
       
-      if (lastMessage.senderId === contactId) {
-        await apiClient.post(`/chats/${contactId}/read`, { messageId: lastMessage.id });
-        
-        set({
-          conversations: {
-            ...conversations,
-            [contactId]: {
-              ...conversation,
-              lastReadMessageId: lastMessage.id,
-              isUnread: false
-            }
+      if (unreadMessages.length === 0) return;
+      
+      // Get the last message to update in the database
+      const lastMessage = unreadMessages[unreadMessages.length - 1];
+      
+      // Update the database
+      await apiClient.post(`/chats/${contactId}/read`, { messageId: lastMessage.id });
+      
+      // Update all unread messages status to 'read'
+      const updatedMessages = conversation.messages.map(message => 
+        message.senderId === contactId && message.status !== 'read'
+          ? { ...message, status: 'read' as const }
+          : message
+      );
+      
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: {
+            ...conversation,
+            lastReadMessageId: lastMessage.id,
+            isUnread: false,
+            messages: updatedMessages
           }
-        });
-      }
+        }
+      });
     } catch (error) {
       // Error handling without state change
+      console.error("Failed to mark messages as read:", error);
     }
   },
   

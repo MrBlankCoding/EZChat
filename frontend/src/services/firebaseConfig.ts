@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
+import { getMessaging } from 'firebase/messaging';
 
 // Your Firebase configuration
 // Replace with your actual Firebase project configuration
@@ -20,4 +21,16 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const storage = getStorage(app);
 
-export { auth, storage }; 
+// Initialize Messaging conditionally (only in browser environment)
+let messaging = null;
+try {
+  // Check if we're in a browser environment that supports FCM
+  if (typeof window !== 'undefined' && 'Notification' in window) {
+    messaging = getMessaging(app);
+  }
+} catch (error) {
+  console.warn('Firebase Messaging initialization failed:', error);
+}
+
+export { auth, storage, messaging };
+export default app; 

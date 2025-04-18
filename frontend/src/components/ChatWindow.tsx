@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useChatStore } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import { useContactsStore } from '../stores/contactsStore';
@@ -31,6 +31,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const [uploading, setUploading] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [observedMessages, setObservedMessages] = useState<Set<string>>(new Set());
   
   const { user } = useAuthStore();
   const { conversations, typingIndicators } = useChatStore();
@@ -38,6 +39,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const messageObserverRef = useRef<IntersectionObserver | null>(null);
+  const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   
   // Check if contacts is defined before accessing a key
   if (!contacts || contacts.length === 0) {
@@ -54,10 +57,96 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const messages = conversation?.messages || [];
   const isContactTyping = typingIndicators?.[contactId] || false;
   
+  // Setup message ref callback for IntersectionObserver
+  const messageRefCallback = useCallback((node: HTMLDivElement | null, messageId: string) => {
+    if (node) {
+      messageRefs.current.set(messageId, node);
+    } else {
+      messageRefs.current.delete(messageId);
+    }
+  }, []);
+  
+  // Handle when a message becomes visible
+  const handleMessageInView = useCallback((messageId: string, senderId: string) => {
+    if (senderId !== user?.id && !observedMessages.has(messageId)) {
+      websocketService.sendReadReceipt(contactId, messageId);
+      setObservedMessages(prev => new Set(prev).add(messageId));
+    }
+  }, [contactId, user?.id, observedMessages]);
+  
+  // Setup IntersectionObserver for read receipts
+  useEffect(() => {
+    // Reset observed messages when contact changes
+    setObservedMessages(new Set());
+    
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const messageId = entry.target.getAttribute('data-message-id');
+            const senderId = entry.target.getAttribute('data-sender-id');
+            
+            if (messageId && senderId) {
+              handleMessageInView(messageId, senderId);
+            }
+          }
+        });
+      },
+      { threshold: 0.5 } // Message is considered visible when 50% is in view
+    );
+    
+    messageObserverRef.current = observer;
+    
+    return () => {
+      observer.disconnect();
+    };
+  }, [contactId, handleMessageInView]);
+  
+  // Observe messages when they are rendered
+  useEffect(() => {
+    const observer = messageObserverRef.current;
+    if (!observer) return;
+    
+    // Clean up old observations
+    observer.disconnect();
+    
+    // Observe all current message elements
+    messageRefs.current.forEach((node) => {
+      observer.observe(node);
+    });
+  }, [messages, messageObserverRef.current]);
+  
   // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+  
+  // Add visibility change listener to send read receipts when user returns to tab
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && user && contactId) {
+        // Get unread messages from this contact
+        const conversation = conversations?.[contactId];
+        if (!conversation?.messages?.length) return;
+        
+        const unreadMessages = conversation.messages.filter(
+          msg => msg.senderId === contactId && msg.status !== 'read'
+        );
+        
+        if (unreadMessages.length > 0) {
+          // Send read receipt for the latest unread message
+          const lastMessage = unreadMessages[unreadMessages.length - 1];
+          websocketService.sendReadReceipt(contactId, lastMessage.id);
+        }
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [contactId, user, conversations]);
   
   // Auto-focus the input field
   useEffect(() => {
@@ -279,12 +368,18 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
         ) : (
           <div className="space-y-1">
             {messages.map((msg) => (
-              <MessageBubble
+              <div 
                 key={msg.id}
-                message={msg}
-                isOwn={msg.senderId === user?.id}
-                contactId={contactId}
-              />
+                ref={(node) => messageRefCallback(node, msg.id)}
+                data-message-id={msg.id}
+                data-sender-id={msg.senderId}
+              >
+                <MessageBubble
+                  message={msg}
+                  isOwn={msg.senderId === user?.id}
+                  contactId={contactId}
+                />
+              </div>
             ))}
             
             {/* Typing indicator */}

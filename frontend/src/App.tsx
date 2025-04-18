@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -8,114 +8,132 @@ import ContactsPage from './pages/ContactsPage';
 import SettingsPage from './pages/SettingsPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ProtectedRoute from './components/ProtectedRoute';
-import ThemeProvider from './components/ThemeProvider';
 import { Toaster } from 'react-hot-toast';
-import ConnectionTest from './components/ConnectionTest';
-import useWebSocketConnection from './hooks/useWebSocketConnection';
-import './App.css';
-
-// Debug component that only shows the connection test
-const ConnectionDebugPage = () => {
-  return (
-    <div className="flex items-center justify-center min-h-screen bg-gray-50 p-4">
-      <div className="max-w-md w-full">
-        <h1 className="text-xl font-bold text-center mb-4">WebSocket Connection Debug</h1>
-        <ConnectionTest />
-      </div>
-    </div>
-  );
-};
+import { AuthProvider } from './context/AuthProvider';
 
 function App() {
-  const { checkAuth } = useAuthStore();
-  const [loading, setLoading] = useState(true);
+  const { isAuthenticated, initialized, checkAuth } = useAuthStore();
   
-  // Initialize WebSocket connection
-  useWebSocketConnection();
-
+  // Initial auth check
   useEffect(() => {
-    const initAuth = async () => {
-      await checkAuth();
-      setLoading(false);
-    };
-
-    initAuth();
+    checkAuth();
   }, [checkAuth]);
+  
+  // Handle notification clicks from service worker
+  useEffect(() => {
+    const handleNotificationClick = (event: MessageEvent) => {
+      // Check if the message is a notification click
+      if (event.data && event.data.type === 'NOTIFICATION_CLICK') {
+        // Get the contact ID from the message
+        const contactId = event.data.contactId;
+        
+        if (contactId) {
+          // Navigate to the chat with this contact
+          window.location.href = `/chat/${contactId}`;
+        }
+      }
+    };
+    
+    // Add event listener for messages from service worker
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.addEventListener('message', handleNotificationClick);
+    }
+    
+    // Cleanup function
+    return () => {
+      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.removeEventListener('message', handleNotificationClick);
+      }
+    };
+  }, []);
+  
+  // Register the service worker for notifications
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/firebase-messaging-sw.js')
+        .then(registration => {
+          console.log('Service Worker registered with scope:', registration.scope);
+        })
+        .catch(error => {
+          console.error('Service Worker registration failed:', error);
+        });
+    }
+  }, []);
 
-  if (loading) {
+  if (!initialized) {
+    // Show loading state while checking authentication
     return (
-      <div className="flex items-center justify-center h-screen bg-white dark:bg-dark-900 transition-colors duration-200">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 dark:border-secondary-500"></div>
+      <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-dark-900">
+        <div className="w-16 h-16 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
       </div>
     );
   }
 
   return (
-    <ThemeProvider>
-      <div className="transition-colors duration-200">
-        <Toaster
-          position="top-right"
-          toastOptions={{
-            className: 'bg-white dark:bg-dark-800 dark:text-white rounded-xl shadow-soft-md',
-            duration: 5000,
-          }}
-        />
-        
-        <Routes>
-          {/* Public Routes */}
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
-          
-          {/* Debug Routes */}
-          <Route path="/debug/connection" element={<ConnectionDebugPage />} />
-          
-          {/* Protected Routes */}
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <Navigate to="/chat" />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/chat"
-            element={
-              <ProtectedRoute>
-                <ChatPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/chat/:contactId"
-            element={
-              <ProtectedRoute>
-                <ChatPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/contacts"
-            element={
-              <ProtectedRoute>
-                <ContactsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <ProtectedRoute>
-                <SettingsPage />
-              </ProtectedRoute>
-            }
+    <AuthProvider>
+      <Router>
+        <div className="transition-colors duration-200">
+          <Toaster
+            position="top-right"
+            toastOptions={{
+              className: 'bg-white dark:bg-dark-800 dark:text-white rounded-xl shadow-soft-md',
+              duration: 5000,
+            }}
           />
           
-          {/* 404 Route */}
-          <Route path="*" element={<NotFoundPage />} />
-        </Routes>
-      </div>
-    </ThemeProvider>
+          <Routes>
+            {/* Public Routes */}
+            <Route path="/login" element={isAuthenticated ? <Navigate to="/" /> : <LoginPage />} />
+            <Route path="/register" element={isAuthenticated ? <Navigate to="/" /> : <RegisterPage />} />
+            
+            {/* Protected Routes */}
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <Navigate to="/chat" />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/chat"
+              element={
+                <ProtectedRoute>
+                  <ChatPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/chat/:contactId"
+              element={
+                <ProtectedRoute>
+                  <ChatPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/contacts"
+              element={
+                <ProtectedRoute>
+                  <ContactsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute>
+                  <SettingsPage />
+                </ProtectedRoute>
+              }
+            />
+            
+            {/* 404 Route */}
+            <Route path="*" element={<NotFoundPage />} />
+          </Routes>
+        </div>
+      </Router>
+    </AuthProvider>
   );
 }
 
