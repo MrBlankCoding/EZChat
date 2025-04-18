@@ -10,8 +10,21 @@ import NotFoundPage from './pages/NotFoundPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import ThemeProvider from './components/ThemeProvider';
 import { Toaster } from 'react-hot-toast';
+import ConnectionTest from './components/ConnectionTest';
 import useWebSocketConnection from './hooks/useWebSocketConnection';
 import './App.css';
+
+// Debug component that only shows the connection test
+const ConnectionDebugPage = () => {
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-gray-50 p-4">
+      <div className="max-w-md w-full">
+        <h1 className="text-xl font-bold text-center mb-4">WebSocket Connection Debug</h1>
+        <ConnectionTest />
+      </div>
+    </div>
+  );
+};
 
 function App() {
   const { checkAuth } = useAuthStore();
@@ -52,6 +65,9 @@ function App() {
           {/* Public Routes */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          
+          {/* Debug Routes */}
+          <Route path="/debug/connection" element={<ConnectionDebugPage />} />
           
           {/* Protected Routes */}
           <Route
