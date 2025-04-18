@@ -1,197 +1,154 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useContactsStore } from '../stores/contactsStore';
 import { useChatStore } from '../stores/chatStore';
-import { useContactsStore, Contact as ContactType } from '../stores/contactsStore';
-import { MagnifyingGlassIcon, UserPlusIcon, BellIcon } from '@heroicons/react/24/outline';
-import { format } from 'date-fns';
 import AddContact from './AddContact';
+import { UserPlusIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
 const ContactList = () => {
   const navigate = useNavigate();
-  const { activeConversationId, setActiveConversation, conversations } = useChatStore();
-  const { contacts, pendingContacts, fetchContacts, fetchPendingContacts } = useContactsStore();
-  const [searchQuery, setSearchQuery] = useState('');
+  const { contacts } = useContactsStore();
+  const { activeConversationId, setActiveConversation } = useChatStore();
+  const [searchTerm, setSearchTerm] = useState('');
   const [showAddContact, setShowAddContact] = useState(false);
-  
-  // Fetch contacts when component mounts
-  useEffect(() => {
-    fetchContacts();
-    fetchPendingContacts();
-    
-    // Set up a refresh interval
-    const interval = setInterval(() => {
-      fetchContacts();
-      fetchPendingContacts();
-    }, 30000); // Refresh every 30 seconds
-    
-    return () => clearInterval(interval);
-  }, [fetchContacts, fetchPendingContacts]);
-  
-  const handleContactClick = (contactId: string) => {
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Filter contacts by search term
+  const filteredContacts = contacts.filter((contact) => {
+    const displayName = contact.contact_display_name?.toLowerCase() || '';
+    const email = contact.contact_email?.toLowerCase() || '';
+    const term = searchTerm.toLowerCase();
+    return displayName.includes(term) || email.includes(term);
+  });
+
+  // Handle contact selection
+  const selectContact = (contactId: string) => {
     setActiveConversation(contactId);
     navigate(`/chat/${contactId}`);
   };
-  
-  // Convert contacts to chat-compatible format
-  const chatContacts = contacts.map(contact => ({
-    id: contact.contact_id,
-    displayName: contact.contact_display_name,
-    email: contact.contact_email,
-    photoURL: contact.contact_avatar_url,
-    status: contact.contact_status,
-    unreadCount: 0, // This would come from the chat store
-    isTyping: false // This would come from the chat store
-  }));
-  
-  const filteredContacts = chatContacts.filter(contact => {
-    if (!searchQuery) return true;
-    
-    const searchLower = searchQuery.toLowerCase();
-    return (
-      contact.displayName.toLowerCase().includes(searchLower) ||
-      contact.email.toLowerCase().includes(searchLower)
-    );
-  });
-  
-  // Get the last message for each contact to display in the list
-  const getLastMessage = (contactId: string) => {
-    const conversation = conversations[contactId];
-    if (!conversation || conversation.messages.length === 0) return null;
-    
-    return conversation.messages[conversation.messages.length - 1];
-  };
-  
+
   return (
-    <div className="w-80 border-r border-gray-200 flex flex-col bg-white">
-      <div className="p-4 border-b border-gray-200">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-gray-800">Contacts</h2>
-          <div className="flex space-x-2">
-            {pendingContacts.length > 0 && (
-              <button
-                className="relative p-1.5 rounded-full bg-gray-100 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                onClick={() => setShowAddContact(true)}
-              >
-                <BellIcon className="h-5 w-5 text-gray-600" />
-                <span className="absolute top-0 right-0 h-3.5 w-3.5 bg-red-500 rounded-full text-[10px] flex items-center justify-center text-white">
-                  {pendingContacts.length}
-                </span>
-              </button>
-            )}
-            <button
-              className="p-1.5 rounded-full bg-gray-100 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-primary-500"
-              onClick={() => setShowAddContact(true)}
-            >
-              <UserPlusIcon className="h-5 w-5 text-gray-600" />
-            </button>
-          </div>
+    <div className="w-80 border-r border-gray-200 dark:border-dark-700 flex flex-col bg-white dark:bg-dark-900 transition-colors duration-200">
+      {/* Header */}
+      <div className="p-4 border-b border-gray-200 dark:border-dark-700">
+        <div className="flex justify-between items-center mb-3">
+          <h2 className="text-lg font-medium text-gray-900 dark:text-white">Contacts</h2>
+          <button
+            onClick={() => setShowAddContact(true)}
+            className="p-1.5 text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-secondary-400 rounded-full bg-gray-100 dark:bg-dark-800 hover:bg-gray-200 dark:hover:bg-dark-700 transition-colors"
+          >
+            <UserPlusIcon className="h-5 w-5" />
+          </button>
         </div>
-        <div className="relative rounded-md shadow-sm">
-          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-            <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" aria-hidden="true" />
-          </div>
+
+        {/* Search */}
+        <div className="relative">
+          <MagnifyingGlassIcon className="h-5 w-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500" />
           <input
             type="text"
-            name="search"
-            id="search"
-            className="focus:ring-primary-500 focus:border-primary-500 block w-full pl-10 sm:text-sm border-gray-300 rounded-md"
             placeholder="Search contacts"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-gray-100 dark:bg-dark-800 text-gray-900 dark:text-white border-0 rounded-xl py-2 pl-10 pr-9 focus:ring-1 focus:ring-primary-500 dark:focus:ring-secondary-500 focus:bg-white dark:focus:bg-dark-700 placeholder-gray-400 dark:placeholder-gray-500 transition-colors"
           />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm('')}
+              className="absolute right-3 top-1/2 transform -translate-y-1/2"
+            >
+              <XMarkIcon className="h-4 w-4 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300" />
+            </button>
+          )}
         </div>
       </div>
-      
+
+      {/* Contact List */}
       <div className="flex-1 overflow-y-auto">
-        <ul className="divide-y divide-gray-200">
-          {filteredContacts.length === 0 ? (
-            <li className="p-4 text-center text-gray-500">
-              {contacts.length === 0 
-                ? 'No contacts yet. Add your first contact!' 
-                : 'No contacts found matching your search'}
-            </li>
-          ) : (
-            filteredContacts.map((contact) => {
-              const lastMessage = getLastMessage(contact.id);
-              
+        {isLoading ? (
+          <div className="flex items-center justify-center h-32">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600 dark:border-secondary-500"></div>
+          </div>
+        ) : filteredContacts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full p-4 text-center">
+            {searchTerm ? (
+              <>
+                <p className="text-gray-500 dark:text-gray-400 mb-1">No contacts found</p>
+                <p className="text-sm text-gray-400 dark:text-gray-500">
+                  Try a different search term
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-gray-500 dark:text-gray-400 mb-1">Your contacts list is empty</p>
+                <button
+                  onClick={() => setShowAddContact(true)}
+                  className="mt-2 px-3 py-1.5 text-sm text-white bg-primary-600 dark:bg-secondary-600 hover:bg-primary-700 dark:hover:bg-secondary-700 rounded-lg transition-colors focus:outline-none"
+                >
+                  Add your first contact
+                </button>
+              </>
+            )}
+          </div>
+        ) : (
+          <ul className="divide-y divide-gray-200 dark:divide-dark-700">
+            {filteredContacts.map((contact) => {
+              const isActive = contact.contact_id === activeConversationId;
+              // We'll simulate unread counts for the design mockup
+              const unreadCount = Math.random() > 0.7 ? Math.floor(Math.random() * 5) + 1 : 0;
+
               return (
                 <li
-                  key={contact.id}
-                  className={`hover:bg-gray-50 cursor-pointer ${
-                    activeConversationId === contact.id ? 'bg-gray-100' : ''
-                  }`}
-                  onClick={() => handleContactClick(contact.id)}
+                  key={contact.contact_id}
+                  onClick={() => selectContact(contact.contact_id)}
+                  className={`
+                    cursor-pointer transition-all duration-200 animate-fade-in
+                    ${isActive ? 'bg-primary-50 dark:bg-dark-800' : 'hover:bg-gray-50 dark:hover:bg-dark-800'}
+                  `}
                 >
-                  <div className="px-4 py-4 flex items-center sm:px-6">
-                    <div className="min-w-0 flex-1 flex items-center">
-                      <div className="flex-shrink-0 relative">
-                        <img
-                          className="h-12 w-12 rounded-full object-cover"
-                          src={contact.photoURL || 'https://via.placeholder.com/150'}
-                          alt={contact.displayName}
-                        />
-                        <div
-                          className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white ${
-                            contact.status === 'online'
-                              ? 'bg-green-500'
-                              : contact.status === 'away'
-                              ? 'bg-yellow-500'
-                              : 'bg-gray-500'
-                          }`}
-                        ></div>
+                  <div className="flex items-center py-3 px-4">
+                    <div className="relative flex-shrink-0">
+                      <img
+                        className={`h-12 w-12 rounded-full object-cover ${isActive ? 'ring-2 ring-primary-500 dark:ring-secondary-500' : ''}`}
+                        src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
+                        alt={contact.contact_display_name}
+                      />
+                      <div
+                        className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white dark:border-dark-900 ${
+                          contact.contact_status === 'online'
+                            ? 'bg-green-500'
+                            : contact.contact_status === 'away'
+                            ? 'bg-yellow-500'
+                            : 'bg-gray-500'
+                        }`}
+                      ></div>
+                    </div>
+                    <div className="ml-3 flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <p className={`text-sm font-medium truncate ${isActive ? 'text-primary-600 dark:text-secondary-400' : 'text-gray-900 dark:text-white'}`}>
+                          {contact.contact_display_name}
+                        </p>
+                        {unreadCount > 0 && (
+                          <span className="ml-2 bg-primary-600 dark:bg-secondary-600 text-white text-xs px-2 py-0.5 rounded-full animate-scale-in">
+                            {unreadCount}
+                          </span>
+                        )}
                       </div>
-                      <div className="min-w-0 flex-1 px-4">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-medium text-gray-900 truncate">{contact.displayName}</p>
-                          {lastMessage && (
-                            <p className="text-xs text-gray-500">
-                              {(() => {
-                                try {
-                                  // Check if timestamp is a valid date value
-                                  if (!lastMessage.timestamp) return '';
-                                  // Parse the timestamp correctly - handle both string and number formats
-                                  const date = typeof lastMessage.timestamp === 'string' 
-                                    ? new Date(lastMessage.timestamp) 
-                                    : new Date(Number(lastMessage.timestamp));
-                                  
-                                  // Validate that the date is valid before formatting
-                                  if (isNaN(date.getTime())) return '';
-                                  
-                                  return format(date, 'h:mm a');
-                                } catch (error) {
-                                  console.error('Error formatting date:', error, lastMessage);
-                                  return '';
-                                }
-                              })()}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm text-gray-500 truncate">
-                            {lastMessage ? lastMessage.text : 'No messages yet'}
-                          </p>
-                          {contact.unreadCount && contact.unreadCount > 0 ? (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-500 text-white">
-                              {contact.unreadCount}
-                            </span>
-                          ) : contact.isTyping ? (
-                            <span className="inline-flex space-x-1 items-center h-2">
-                              <span className="bg-gray-500 rounded-full h-1.5 w-1.5 animate-typing"></span>
-                              <span className="bg-gray-500 rounded-full h-1.5 w-1.5 animate-typing" style={{ animationDelay: '0.2s' }}></span>
-                              <span className="bg-gray-500 rounded-full h-1.5 w-1.5 animate-typing" style={{ animationDelay: '0.4s' }}></span>
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
+                      <p className={`text-xs truncate ${isActive ? 'text-primary-500 dark:text-secondary-500' : 'text-gray-500 dark:text-gray-400'}`}>
+                        {contact.contact_status === 'online'
+                          ? 'Online'
+                          : contact.contact_status === 'away'
+                          ? 'Away'
+                          : 'Offline'}
+                      </p>
                     </div>
                   </div>
                 </li>
               );
-            })
-          )}
-        </ul>
+            })}
+          </ul>
+        )}
       </div>
-      
+
       {/* Add Contact Modal */}
       {showAddContact && (
         <AddContact onClose={() => setShowAddContact(false)} />

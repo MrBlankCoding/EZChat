@@ -1,10 +1,8 @@
 import { useChatStore } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 
-// WebSocket connection states
 type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 
-// Message types for WebSocket
 enum MessageType {
   MESSAGE = "message",
   TYPING = "typing",
@@ -15,11 +13,22 @@ enum MessageType {
   PRESENCE = "presence"
 }
 
-// Interface for WebSocket messages
 interface WebSocketMessage {
   type: MessageType;
   from?: string;
   to?: string | null;
+  from_user?: string;
+  to_user?: string;
+  message_id?: string;
+  _id?: string;
+  sender_id?: string;
+  recipient_id?: string;
+  text?: string;
+  timestamp?: string;
+  created_at?: string;
+  status?: 'sent' | 'delivered' | 'read';
+  attachments?: any[];
+  is_typing?: boolean;
   payload: any;
 }
 
@@ -30,37 +39,42 @@ class WebSocketService {
   private pingInterval: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-  private reconnectDelay = 2000; // Initial delay in ms
+  private reconnectDelay = 2000;
   private errorHandlers: Array<(error: any) => void> = [];
   
-  // Connect to WebSocket server
   async connect() {
     if (this.socket?.readyState === WebSocket.OPEN || this.connectionState === 'connecting') {
+      console.log('[WS] Already connected or connecting, skipping connection');
       return;
     }
     
     this.connectionState = 'connecting';
+    console.log('[WS] Initiating connection...');
     
     try {
-      // Get current user
       const { user } = useAuthStore.getState();
       if (!user) {
-        console.error('Cannot connect to WebSocket: User not authenticated');
+        console.error('[WS] Cannot connect: User not authenticated');
+        this.connectionState = 'disconnected';
         return;
       }
 
-      // Get Firebase token
       const auth = (await import('./firebaseConfig')).auth;
       const token = await auth.currentUser?.getIdToken();
       
       if (!token) {
-        console.error('Cannot connect to WebSocket: No authentication token available');
+        console.error('[WS] Cannot connect: No authentication token available');
+        this.connectionState = 'disconnected';
         return;
       }
       
-      // Connect with token - Use 127.0.0.1 instead of localhost to avoid name resolution issues
       const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/ws'}?token=${token}`;
-      console.log('Connecting to WebSocket:', wsUrl);
+      
+      if (this.socket) {
+        this.socket.close();
+        this.socket = null;
+      }
+      
       this.socket = new WebSocket(wsUrl);
       
       this.socket.onopen = this.handleOpen.bind(this);
@@ -74,7 +88,6 @@ class WebSocketService {
     }
   }
   
-  // Disconnect from WebSocket server
   disconnect() {
     if (this.socket) {
       this.socket.close();
@@ -96,89 +109,96 @@ class WebSocketService {
     this.reconnectAttempts = 0;
   }
   
-  // Handle WebSocket connection open
   private handleOpen() {
-    console.log('WebSocket connection established');
+    console.log('[WS] Connection ESTABLISHED successfully');
     this.connectionState = 'connected';
     this.reconnectAttempts = 0;
     
-    // Setup ping interval
-    this.pingInterval = setInterval(() => {
-      this.sendPing();
-    }, 30000); // Send ping every 30 seconds
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+    }
+    
+    this.pingInterval = setInterval(() => this.sendPing(), 30000);
+  }
+
+  private parseMessage(data: string): WebSocketMessage | null {
+    try {
+      return JSON.parse(data);
+    } catch (parseError) {
+      console.error('Error parsing WebSocket message JSON:', parseError);
+      console.log('Raw message data:', data);
+      this.notifyErrorHandlers(`Parse error: ${parseError}`);
+      return null;
+    }
+  }
+
+  private transformMessage(data: WebSocketMessage) {
+    const message = {
+      id: data.payload?.id || data.payload?._id || data.payload?.message_id || 
+          data.message_id || data._id || `msg-${Date.now()}`,
+      senderId: data.payload?.senderId || data.payload?.sender_id || 
+                data.from || data.from_user || data.sender_id || 
+                data.payload?.from_user || 'unknown',
+      receiverId: data.payload?.receiverId || data.payload?.recipient_id || 
+                  data.to || data.to_user || data.recipient_id || 
+                  data.payload?.to_user || 'unknown',
+      text: data.payload?.text || data.text || '',
+      timestamp: data.payload?.timestamp || data.payload?.created_at || 
+                 data.timestamp || data.created_at || new Date().toISOString(),
+      status: (data.payload?.status as 'sent' | 'delivered' | 'read') || 
+              (data.status as 'sent' | 'delivered' | 'read') || 'sent',
+      attachments: data.payload?.attachments || data.attachments || []
+    };
+
+    return message;
   }
   
-  // Handle WebSocket messages
   private handleMessage(event: MessageEvent) {
     try {
-      // Check if it's a ping response
       if (event.data === 'pong') {
-        console.log('Received pong from server');
         return;
       }
       
-      // Try to parse the JSON and log the raw data for debugging
-      let data: WebSocketMessage;
-      try {
-        data = JSON.parse(event.data);
-      } catch (parseError) {
-        console.error('Error parsing WebSocket message JSON:', parseError);
-        console.log('Raw message data:', event.data);
-        this.notifyErrorHandlers(`Parse error: ${parseError}`);
-        return;
-      }
-      
-      const chatStore = useChatStore.getState();
-      
+      const data = this.parseMessage(event.data);
       if (!data || !data.type) {
         console.warn('Received malformed WebSocket message:', event.data);
         this.notifyErrorHandlers('Malformed message received');
         return;
       }
       
+      const chatStore = useChatStore.getState();
+      const { user } = useAuthStore.getState();
+      
       switch (data.type) {
         case MessageType.MESSAGE:
-          // Handle incoming message
-          if (data.payload) {
-            console.log('Received message payload:', data.payload);
+          const message = this.transformMessage(data);
+          
+          if (message.senderId !== 'unknown' && message.receiverId !== 'unknown') {
+            chatStore.addMessage(message);
             
-            // Convert the message format to match our frontend Message interface
-            const transformedMessage = {
-              id: data.payload.id || data.payload._id,
-              senderId: data.payload.senderId || data.payload.sender_id || data.from,
-              receiverId: data.payload.receiverId || data.payload.recipient_id || data.to,
-              text: data.payload.text || '',
-              timestamp: data.payload.timestamp || data.payload.created_at || new Date().toISOString(),
-              status: data.payload.status || 'sent',
-              attachments: data.payload.attachments || []
-            };
-            
-            // Log for debugging
-            console.log('Transformed message:', transformedMessage);
-            
-            chatStore.addMessage(transformedMessage);
-          } else {
-            console.warn('Received message with missing payload:', data);
+            if (user && user.id !== message.senderId) {
+              this.sendReadReceipt(message.senderId, message.id);
+            }
           }
           break;
           
         case MessageType.TYPING:
-          // Handle typing indicator
-          if (data.payload && data.payload.senderId) {
-            chatStore.setTypingIndicator(data.payload.senderId, data.payload.isTyping);
+          const senderId = data.from || data.from_user || data.sender_id || data.payload?.sender_id;
+          const isTyping = data.payload?.isTyping ?? data.is_typing;
+          
+          if (senderId) {
+            chatStore.setTypingIndicator(senderId, isTyping);
           }
           break;
           
         case MessageType.STATUS:
-          // Handle status updates
-          if (data.payload && data.payload.userId) {
+          if (data.payload?.userId) {
             chatStore.updateContactStatus(data.payload.userId, data.payload.status);
           }
           break;
           
         case MessageType.DELIVERY_RECEIPT:
-          // Handle delivery receipt
-          if (data.payload && data.payload.messageId && data.payload.contactId) {
+          if (data.payload?.messageId && data.payload?.contactId) {
             chatStore.updateMessageStatus(
               data.payload.messageId, 
               data.payload.contactId, 
@@ -188,8 +208,7 @@ class WebSocketService {
           break;
           
         case MessageType.READ_RECEIPT:
-          // Handle read receipt
-          if (data.payload && data.payload.messageId && data.payload.contactId) {
+          if (data.payload?.messageId && data.payload?.contactId) {
             chatStore.updateMessageStatus(
               data.payload.messageId, 
               data.payload.contactId, 
@@ -198,40 +217,26 @@ class WebSocketService {
           }
           break;
           
-        case MessageType.ERROR:
-          const errorDetails = data.payload && data.payload.message 
-            ? data.payload.message 
-            : 'Unknown server error';
-          
-          if (data.payload && data.payload.message) {
-            console.error('WebSocket error from server:', data.payload.message, data.payload);
-          } else {
-            console.error('WebSocket error with no details, full data:', data);
-            // Add more detailed diagnostics
-            console.log('ERROR message structure:', {
-              hasPayload: !!data.payload,
-              payloadType: data.payload ? typeof data.payload : 'undefined', 
-              payloadKeys: data.payload ? Object.keys(data.payload) : [],
-              fullMessage: data
-            });
+        case MessageType.PRESENCE:
+          if (data.payload?.status && data.from) {
+            chatStore.updateContactStatus(data.from, data.payload.status);
           }
-          
-          // Notify error handlers
-          this.notifyErrorHandlers(errorDetails);
           break;
           
-        default:
-          console.log('Unhandled message type:', data.type, data);
+        case MessageType.ERROR:
+          const errorDetails = data.payload?.message || 'Unknown server error';
+          console.error('WebSocket error from server:', errorDetails);
+          this.notifyErrorHandlers(errorDetails);
+          break;
       }
     } catch (error) {
       console.error('Error handling WebSocket message:', error);
-      console.log('Original message data:', event.data);
       this.notifyErrorHandlers(`Message handling error: ${error}`);
     }
   }
   
-  // Handle WebSocket connection close
   private handleClose(event: CloseEvent) {
+    console.log(`[WS] Connection CLOSED: Code ${event.code} - Reason: "${event.reason}" - Clean: ${event.wasClean}`);
     this.connectionState = 'disconnected';
     
     if (this.pingInterval) {
@@ -239,25 +244,21 @@ class WebSocketService {
       this.pingInterval = null;
     }
     
-    console.log(`WebSocket connection closed: ${event.code} ${event.reason}`);
-    
-    // Attempt reconnection if not explicitly disconnected
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts);
+      
       this.reconnectTimer = setTimeout(() => {
-        console.log(`Attempting to reconnect (${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})...`);
         this.reconnectAttempts++;
         this.connect();
-      }, this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts)); // Exponential backoff
+      }, delay);
     } else {
-      console.error('Maximum reconnect attempts reached.');
+      console.error('[WS] Maximum reconnect attempts reached.');
     }
   }
   
-  // Handle WebSocket errors
   private handleError(error: Event) {
     console.error('WebSocket error:', error);
     
-    // Log extra details about the connection state
     const connectionDetails = {
       readyState: this.socket ? this.getReadyStateLabel(this.socket.readyState) : 'No socket',
       url: this.socket?.url || 'Not connected',
@@ -267,89 +268,58 @@ class WebSocketService {
     };
     console.error('WebSocket connection details:', connectionDetails);
     
-    // Notify error listeners
     this.notifyErrorHandlers(error);
   }
   
-  // Get readable WebSocket ready state
   private getReadyStateLabel(readyState: number): string {
-    switch (readyState) {
-      case WebSocket.CONNECTING: return 'CONNECTING';
-      case WebSocket.OPEN: return 'OPEN';
-      case WebSocket.CLOSING: return 'CLOSING';
-      case WebSocket.CLOSED: return 'CLOSED';
-      default: return `UNKNOWN (${readyState})`;
-    }
+    const states = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+    return states[readyState] || `UNKNOWN (${readyState})`;
   }
   
-  // Send a message through WebSocket
   private send(message: WebSocketMessage) {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(message));
-    } else {
-      console.warn('Cannot send message: WebSocket is not connected (readyState: ' + 
-                   (this.socket ? this.getReadyStateLabel(this.socket.readyState) : 'null') + ')');
-      
-      // Store message to send later when connection is established
-      if (this.connectionState !== 'connected') {
-        console.log('Attempting to reconnect WebSocket...');
-        this.connect().then(() => {
-          // Add a slight delay to ensure connection is established
-          setTimeout(() => {
-            if (this.socket?.readyState === WebSocket.OPEN) {
-              console.log('Connection established, sending queued message.');
-              this.socket.send(JSON.stringify(message));
-            } else {
-              console.error('Still not connected after reconnect attempt.');
-            }
-          }, 1000);
-        });
-      }
+      return true;
     }
+    
+    if (this.connectionState !== 'connected') {
+      this.connect().then(() => {
+        setTimeout(() => {
+          if (this.socket?.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify(message));
+          }
+        }, 1000);
+      });
+    }
+    
+    return false;
   }
   
-  // Send authentication message
-  private sendAuth(userId: string) {
-    // Note: Auth happens automatically via token in the URL
-    // No need to send a separate auth message
-    console.log('Authentication handled via token in connection URL');
-  }
-  
-  // Send ping message
   private sendPing() {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send('ping');
     }
   }
   
-  // Send a chat message
   sendMessage(contactId: string, text: string, attachments: any[] = []) {
     const { user } = useAuthStore.getState();
     if (!user) return;
     
     const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
-    // Convert timestamp to ISO string format for server compatibility
     const timestamp = new Date().toISOString();
     
-    // Create message in our frontend format
     const message = {
       id: messageId,
       senderId: user.id,
       receiverId: contactId,
       text,
       attachments,
-      timestamp: timestamp,
+      timestamp,
       status: 'sent' as const
     };
     
-    // Log the outgoing message
-    console.log('Sending message:', message);
-    
-    // Add message to local store immediately with the correct sender ID
     useChatStore.getState().addMessage(message);
     
-    // Send message through WebSocket with the format expected by backend
     this.send({
       type: MessageType.MESSAGE,
       from: user.id,
@@ -368,22 +338,21 @@ class WebSocketService {
     return messageId;
   }
   
-  // Send typing indicator
   sendTypingIndicator(contactId: string, isTyping: boolean) {
     const { user } = useAuthStore.getState();
     if (!user) return;
     
     this.send({
       type: MessageType.TYPING,
-      from: user.id,
-      to: contactId,
+      from_user: user.id,
+      to_user: contactId,
+      is_typing: isTyping,
       payload: {
         isTyping
       }
     });
   }
   
-  // Send read receipt
   sendReadReceipt(contactId: string, messageId: string) {
     const { user } = useAuthStore.getState();
     if (!user) return;
@@ -400,12 +369,28 @@ class WebSocketService {
     });
   }
   
-  // Get connection state
   getConnectionState() {
-    return this.connectionState;
+    return {
+      state: this.connectionState,
+      readyState: this.socket ? this.getReadyStateLabel(this.socket.readyState) : 'No socket',
+      reconnectAttempts: this.reconnectAttempts,
+      url: this.socket?.url || null
+    };
   }
   
-  // New methods for error event handling
+  async testConnection() {
+    const status = this.getConnectionState();
+    
+    if (status.state !== 'connected' || this.socket?.readyState !== WebSocket.OPEN) {
+      this.disconnect();
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return this.connect();
+    }
+    
+    this.sendPing();
+    return Promise.resolve();
+  }
+  
   onError(handler: (error: any) => void): void {
     this.errorHandlers.push(handler);
   }
@@ -425,7 +410,6 @@ class WebSocketService {
   }
 }
 
-// Create singleton instance
 const websocketService = new WebSocketService();
 
-export default websocketService; 
+export default websocketService;

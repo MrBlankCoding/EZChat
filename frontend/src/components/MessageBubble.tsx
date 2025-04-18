@@ -34,36 +34,36 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
   const renderAttachment = (attachment: Attachment, index: number): React.ReactNode => {
     if (attachment.type === 'image') {
       return (
-        <div className="mb-1 rounded-lg overflow-hidden">
+        <div className="mb-2 rounded-xl overflow-hidden shadow-soft-md">
           <img
             src={attachment.url}
             alt={attachment.name}
             className="max-w-xs max-h-60 object-contain"
             loading="lazy"
           />
-          <div className="text-xs text-gray-500 mt-1">
+          <div className="text-xs px-2 py-1 bg-gray-50 dark:bg-dark-800 text-gray-500 dark:text-gray-400">
             {attachment.name} ({formatFileSize(attachment.size)})
           </div>
         </div>
       );
     } else if (attachment.type === 'video') {
       return (
-        <div className="mb-1 rounded-lg overflow-hidden">
+        <div className="mb-2 rounded-xl overflow-hidden shadow-soft-md">
           <video
             src={attachment.url}
             controls
             className="max-w-xs max-h-60"
           />
-          <div className="text-xs text-gray-500 mt-1">
+          <div className="text-xs px-2 py-1 bg-gray-50 dark:bg-dark-800 text-gray-500 dark:text-gray-400">
             {attachment.name} ({formatFileSize(attachment.size)})
           </div>
         </div>
       );
     } else if (attachment.type === 'audio') {
       return (
-        <div className="mb-1">
+        <div className="mb-2 rounded-xl overflow-hidden shadow-soft-md bg-gray-50 dark:bg-dark-800 p-2">
           <audio src={attachment.url} controls className="max-w-xs" />
-          <div className="text-xs text-gray-500 mt-1">
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
             {attachment.name} ({formatFileSize(attachment.size)})
           </div>
         </div>
@@ -75,10 +75,10 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
           href={attachment.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center p-2 bg-gray-100 rounded-md mb-1 hover:bg-gray-200"
+          className="flex items-center p-3 bg-gray-50 dark:bg-dark-800 rounded-xl mb-2 hover:bg-gray-100 dark:hover:bg-dark-700 shadow-soft transition-colors group"
         >
           <svg 
-            className="h-6 w-6 mr-2 text-gray-500" 
+            className="h-8 w-8 mr-3 text-gray-400 dark:text-gray-500 group-hover:text-primary-500 dark:group-hover:text-secondary-400 transition-colors" 
             xmlns="http://www.w3.org/2000/svg" 
             fill="none" 
             viewBox="0 0 24 24" 
@@ -87,28 +87,30 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
             <path 
               strokeLinecap="round" 
               strokeLinejoin="round" 
-              strokeWidth={2} 
+              strokeWidth={1.5} 
               d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" 
             />
           </svg>
-          <span className="text-sm text-blue-600">{attachment.name}</span>
-          <span className="ml-2 text-xs text-gray-500">({formatFileSize(attachment.size)})</span>
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-medium text-primary-600 dark:text-secondary-400 truncate block">{attachment.name}</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">{formatFileSize(attachment.size)}</span>
+          </div>
         </a>
       );
     }
   };
 
   return (
-    <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex mb-3 animate-slide-up ${isOwn ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-md rounded-lg px-4 py-2 ${
+        className={`max-w-md ${
           isOwn
-            ? 'bg-primary-600 text-white rounded-br-none'
-            : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none'
+            ? 'bg-primary-600 dark:bg-primary-700 text-white rounded-2xl rounded-br-none shadow-soft-md'
+            : 'bg-white dark:bg-dark-800 text-gray-800 dark:text-gray-200 rounded-2xl rounded-bl-none shadow-soft'
         }`}
       >
         {message.attachments && message.attachments.length > 0 && (
-          <div className="mb-2">
+          <div className="p-2">
             {message.attachments.map((attachment, index) => (
               <React.Fragment key={`${message.id}-attachment-${index}`}>
                 {renderAttachment(attachment, index)}
@@ -117,9 +119,20 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
           </div>
         )}
         
-        {message.text && <p className="whitespace-pre-wrap">{message.text}</p>}
+        {message.text && (
+          <div className={`px-4 py-2.5 ${message.attachments && message.attachments.length > 0 ? 'pt-0' : ''}`}>
+            <p className="whitespace-pre-wrap text-sm">{message.text}</p>
+          </div>
+        )}
         
-        <div className={`flex items-center justify-end mt-1 text-xs ${isOwn ? 'text-primary-200' : 'text-gray-500'}`}>
+        <div 
+          className={`flex items-center justify-end px-4 pb-1.5 text-xs 
+            ${isOwn 
+              ? 'text-primary-200 dark:text-primary-300' 
+              : 'text-gray-400 dark:text-gray-500'
+            }`
+          }
+        >
           <span>
             {(() => {
               try {
@@ -154,7 +167,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
                 </div>
               )}
               {message.status === 'read' && (
-                <div className="flex text-blue-500">
+                <div className="flex text-blue-400">
                   <CheckIcon className="h-3 w-3" />
                   <CheckIcon className="h-3 w-3 -ml-1" />
                 </div>
