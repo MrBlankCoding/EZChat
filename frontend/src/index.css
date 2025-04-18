@@ -10,11 +10,42 @@
   --scrollbar-thumb: #cbd5e1;
   --scrollbar-track: transparent;
   --scrollbar-width: 8px;
+  
+  /* Emoji Picker Variables */
+  --bg-color: #ffffff;
+  --text-color: #374151;
+  --secondary-text-color: #6B7280;
+  --input-bg-color: #F3F4F6;
+  --placeholder-color: #9CA3AF;
+  --hover-color: #F3F4F6;
+  --focus-color: #E5E7EB;
 }
 
 .dark {
   --scrollbar-thumb: #475569;
   --scrollbar-track: #1e293b;
+  
+  /* Emoji Picker Variables */
+  --bg-color: #1F2937;
+  --text-color: #F3F4F6;
+  --secondary-text-color: #9CA3AF;
+  --input-bg-color: #374151;
+  --placeholder-color: #6B7280;
+  --hover-color: #374151;
+  --focus-color: #4B5563;
+}
+
+/* Custom Emoji Picker Styles */
+.EmojiPickerReact {
+  --epr-border-radius: 0.5rem;
+  --epr-emoji-size: 1.5rem;
+  --epr-category-navigation-button-size: 1.75rem;
+}
+
+.EmojiPickerReact.epr-dark-theme {
+  --epr-search-input-bg-color: var(--input-bg-color);
+  --epr-search-input-text-color: var(--text-color);
+  --epr-search-input-placeholder-color: var(--placeholder-color);
 }
 
 * {
@@ -169,4 +200,35 @@ a {
   .typing-indicator span:nth-child(3) {
     animation-delay: 0.4s;
   }
+}
+
+/* Animations for components like emoji picker */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+.animate-fade-out {
+  animation: fadeOut 0.2s ease-in forwards;
 } 

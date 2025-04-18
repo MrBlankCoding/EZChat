@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuthStore } from '../stores/authStore';
 import websocketService from '../services/websocketService';
 
@@ -9,6 +9,7 @@ import websocketService from '../services/websocketService';
  */
 export function useWebSocketConnection() {
   const { user } = useAuthStore();
+  const [connectionStatus, setConnectionStatus] = useState(websocketService.getConnectionState());
   
   useEffect(() => {
     // Only connect when the user is authenticated
@@ -28,6 +29,17 @@ export function useWebSocketConnection() {
     // No disconnect on unmount - connections are managed globally by AuthProvider
     // This prevents connection/disconnection cycles when navigating between pages
   }, [user]);
+  
+  useEffect(() => {
+    // Update connection status periodically
+    const intervalId = setInterval(() => {
+      setConnectionStatus(websocketService.getConnectionState());
+    }, 1000);
+    
+    return () => clearInterval(intervalId);
+  }, []);
+  
+  return { connectionStatus };
 }
 
 export default useWebSocketConnection; 

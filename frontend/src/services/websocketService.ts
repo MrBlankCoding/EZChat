@@ -204,18 +204,27 @@ class WebSocketService {
   }
   
   disconnect() {
+    console.log('[WS] Disconnecting WebSocket...');
+    
+    // Set connection state to disconnected first before closing the socket
+    // This prevents attempts to send messages during socket closure
+    this.connectionState = 'disconnected';
+    
     if (this.socket) {
-      console.log('[WS] Disconnecting WebSocket...');
       try {
-        this.socket.onclose = null; // Prevent reconnect on intentional close
-        this.socket.close();
+        // Prevent reconnect on intentional close
+        this.socket.onclose = null;
+        this.socket.onerror = null;
+        
+        // Only attempt to close if not already closed
+        if (this.socket.readyState !== WebSocket.CLOSED) {
+          this.socket.close();
+        }
       } catch (e) {
         console.warn('[WS] Error during disconnect:', e);
       }
       this.socket = null;
     }
-    
-    this.connectionState = 'disconnected';
     
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -348,7 +357,12 @@ class WebSocketService {
           
         case MessageType.STATUS:
           if (data.payload?.userId) {
-            chatStore.updateContactStatus(data.payload.userId, data.payload.status);
+            // Check if the function exists before calling it
+            if (typeof chatStore.updateContactStatus === 'function') {
+              chatStore.updateContactStatus(data.payload.userId, data.payload.status);
+            } else {
+              console.warn('[WS] Received status update but updateContactStatus not implemented in chatStore');
+            }
           }
           break;
           
@@ -374,7 +388,12 @@ class WebSocketService {
           
         case MessageType.PRESENCE:
           if (data.payload?.status && data.from) {
-            chatStore.updateContactStatus(data.from, data.payload.status);
+            // Check if the function exists before calling it
+            if (typeof chatStore.updateContactStatus === 'function') {
+              chatStore.updateContactStatus(data.from, data.payload.status);
+            } else {
+              console.warn('[WS] Received presence update but updateContactStatus not implemented in chatStore');
+            }
           }
           break;
           
@@ -461,6 +480,12 @@ class WebSocketService {
   private handleClose(event: CloseEvent) {
     console.log(`[WS] Connection closed: ${event.code} ${event.reason || ''}`);
     
+    // Set socket to null to prevent sending messages to a closed socket
+    if (this.socket?.readyState === WebSocket.CLOSED) {
+      this.socket = null;
+    }
+    
+    // Only attempt reconnection if we were previously connected
     if (this.connectionState === 'connected') {
       this.connectionState = 'disconnected';
       
@@ -494,6 +519,10 @@ class WebSocketService {
           console.error('[WS] Reconnect attempt failed:', error);
         });
       }, delay);
+    } else if (this.connectionState === 'connecting') {
+      // Handle case where connection closes during connection attempt
+      this.connectionState = 'disconnected';
+      console.log('[WS] Connection closed during connection attempt');
     }
   }
   
@@ -524,18 +553,44 @@ class WebSocketService {
   }
   
   private send(message: WebSocketMessage) {
+    // Check socket exists and is in OPEN state (not CLOSING or CLOSED)
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(message));
-      return true;
+      try {
+        this.socket.send(JSON.stringify(message));
+        return true;
+      } catch (error) {
+        console.error('[WS] Error sending message:', error);
+        this.notifyErrorHandlers("Error sending message: " + error);
+        return false;
+      }
     }
     
-    if (this.connectionState !== 'connected') {
+    // Don't attempt to reconnect if socket is in CLOSING state
+    if (this.socket?.readyState === WebSocket.CLOSING) {
+      console.warn('[WS] Cannot send message: WebSocket is closing');
+      return false;
+    }
+    
+    // Handle case where we're not properly connected
+    if (this.connectionState !== 'connected' || 
+        !this.socket || 
+        this.socket.readyState !== WebSocket.OPEN) {
+      
+      console.log('[WS] Socket not ready, attempting to connect before sending message');
       this.connect().then(() => {
         setTimeout(() => {
           if (this.socket?.readyState === WebSocket.OPEN) {
-            this.socket.send(JSON.stringify(message));
+            try {
+              this.socket.send(JSON.stringify(message));
+            } catch (error) {
+              console.error('[WS] Error sending message after reconnect:', error);
+            }
+          } else {
+            console.warn('[WS] Socket still not ready after reconnect attempt');
           }
         }, 1000);
+      }).catch(error => {
+        console.error('[WS] Failed to connect before sending message:', error);
       });
     }
     
@@ -544,7 +599,29 @@ class WebSocketService {
   
   private sendPing() {
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send('ping');
+      try {
+        this.socket.send('ping');
+      } catch (error) {
+        console.error('[WS] Error sending ping:', error);
+        
+        // If we can't send a ping, the connection might be broken
+        // Force a reconnect
+        if (this.connectionState === 'connected') {
+          console.warn('[WS] Reconnecting due to ping failure');
+          this.connectionState = 'disconnected';
+          this.connect().catch(err => {
+            console.error('[WS] Reconnect attempt after ping failure failed:', err);
+          });
+        }
+      }
+    } else if (this.connectionState === 'connected' && 
+               (!this.socket || this.socket.readyState !== WebSocket.OPEN)) {
+      // Connection state is inconsistent, try to fix it
+      console.warn('[WS] Ping failed: connection state inconsistent');
+      this.connectionState = 'disconnected';
+      this.connect().catch(err => {
+        console.error('[WS] Reconnect attempt after ping inconsistency failed:', err);
+      });
     }
   }
   

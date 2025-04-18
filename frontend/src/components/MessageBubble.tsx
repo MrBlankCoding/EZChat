@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { CheckIcon, PencilIcon, TrashIcon, FaceSmileIcon, ArrowUturnLeftIcon, EllipsisHorizontalIcon, PaperClipIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, PencilIcon, TrashIcon, FaceSmileIcon, ArrowUturnLeftIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline';
 import { useChatStore } from '../stores/chatStore';
 import { useContactsStore } from '../stores/contactsStore';
 import { useAuthStore } from '../stores/authStore';
@@ -41,7 +41,6 @@ interface MessageBubbleProps {
   contactId: string;
 }
 
-// Common emojis for reactions
 const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId }) => {
@@ -61,20 +60,14 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const messageRef = useRef<HTMLDivElement>(null);
   
-  // Find reply message if this is a reply
   const replyToMessage = message.replyTo 
     ? conversations[contactId]?.messages.find(m => m.id === message.replyTo)
     : undefined;
   
-  // Find contact information for sender
   const contact = contacts.find(c => c.contact_id === message.senderId);
+  const senderName = isOwn ? 'You' : (contact?.contact_display_name || 'Unknown');
+  const formattedTimestamp = message.timestamp ? formatMessageTime(message.timestamp) : '';
   
-  // Get username for display
-  const senderName = isOwn 
-    ? 'You' 
-    : (contact?.contact_display_name || 'Unknown');
-  
-  // Handle outside click for menus
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
@@ -90,7 +83,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showContextMenu, showReactionPicker]);
   
-  // Auto focus input when editing
   useEffect(() => {
     if (isEditing && textInputRef.current) {
       textInputRef.current.focus();
@@ -109,92 +101,97 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
     else return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
   };
 
-  const renderAttachment = (attachment: Attachment, index: number): React.ReactNode => {
+  const renderAttachment = (attachment: Attachment): React.ReactNode => {
     if (message.isDeleted) return null;
     
     if (attachment.type === 'image') {
       return (
-        <div className="mb-2 rounded-xl overflow-hidden shadow-soft-md">
-          <img
-            src={attachment.url}
-            alt={attachment.name}
-            className="max-w-xs max-h-60 object-contain"
-            loading="lazy"
-          />
-          <div className="text-xs px-2 py-1 bg-gray-50 dark:bg-dark-800 text-gray-500 dark:text-gray-400">
+        <div className="mb-2 rounded-xl overflow-hidden shadow-md group">
+          <div className="relative">
+            <img
+              src={attachment.url}
+              alt={attachment.name}
+              className="max-w-xs max-h-60 object-contain w-full transition-transform group-hover:scale-[0.98]"
+              loading="lazy"
+            />
+            <div className="absolute inset-0 bg-black opacity-0 group-hover:opacity-10 transition-opacity" />
+          </div>
+          <div className="text-xs px-3 py-1.5 bg-gray-50 dark:bg-dark-800 text-gray-500 dark:text-gray-400 font-medium truncate">
             {attachment.name} ({formatFileSize(attachment.size)})
           </div>
         </div>
       );
     } else if (attachment.type === 'video') {
       return (
-        <div className="mb-2 rounded-xl overflow-hidden shadow-soft-md">
+        <div className="mb-2 rounded-xl overflow-hidden shadow-md">
           <video
             src={attachment.url}
             controls
-            className="max-w-xs max-h-60"
+            className="max-w-xs max-h-60 w-full"
           />
-          <div className="text-xs px-2 py-1 bg-gray-50 dark:bg-dark-800 text-gray-500 dark:text-gray-400">
+          <div className="text-xs px-3 py-1.5 bg-gray-50 dark:bg-dark-800 text-gray-500 dark:text-gray-400 font-medium truncate">
             {attachment.name} ({formatFileSize(attachment.size)})
           </div>
         </div>
       );
     } else if (attachment.type === 'audio') {
       return (
-        <div className="mb-2 rounded-xl overflow-hidden shadow-soft-md bg-gray-50 dark:bg-dark-800 p-2">
-          <audio src={attachment.url} controls className="max-w-xs" />
-          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+        <div className="mb-2 rounded-xl overflow-hidden shadow-md bg-gray-50 dark:bg-dark-800 p-3">
+          <audio src={attachment.url} controls className="max-w-xs w-full" />
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-2 font-medium">
             {attachment.name} ({formatFileSize(attachment.size)})
           </div>
         </div>
       );
     } else {
-      // Default file attachment
       return (
         <a
           href={attachment.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center p-3 bg-gray-50 dark:bg-dark-800 rounded-xl mb-2 hover:bg-gray-100 dark:hover:bg-dark-700 shadow-soft transition-colors group"
+          className="flex items-center p-3 bg-gray-50 dark:bg-dark-800 rounded-xl mb-2 hover:bg-gray-100 dark:hover:bg-dark-700 shadow-md transition-all group border border-transparent hover:border-gray-200 dark:hover:border-dark-600"
         >
-          <svg 
-            className="h-8 w-8 mr-3 text-gray-400 dark:text-gray-500 group-hover:text-primary-500 dark:group-hover:text-secondary-400 transition-colors" 
-            xmlns="http://www.w3.org/2000/svg" 
-            fill="none" 
-            viewBox="0 0 24 24" 
-            stroke="currentColor"
-          >
-            <path 
-              strokeLinecap="round" 
-              strokeLinejoin="round" 
-              strokeWidth={1.5} 
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" 
-            />
-          </svg>
+          <div className="h-12 w-12 mr-3 rounded-lg bg-gray-100 dark:bg-dark-700 flex items-center justify-center">
+            <svg 
+              className="h-6 w-6 text-gray-400 dark:text-gray-500 group-hover:text-primary-500 dark:group-hover:text-secondary-400 transition-colors" 
+              xmlns="http://www.w3.org/2000/svg" 
+              fill="none" 
+              viewBox="0 0 24 24" 
+              stroke="currentColor"
+            >
+              <path 
+                strokeLinecap="round" 
+                strokeLinejoin="round" 
+                strokeWidth={1.5} 
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" 
+              />
+            </svg>
+          </div>
           <div className="flex-1 min-w-0">
             <span className="text-sm font-medium text-primary-600 dark:text-secondary-400 truncate block">{attachment.name}</span>
             <span className="text-xs text-gray-500 dark:text-gray-400">{formatFileSize(attachment.size)}</span>
+          </div>
+          <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <svg className="h-5 w-5 text-gray-400 group-hover:text-primary-500 dark:group-hover:text-secondary-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
           </div>
         </a>
       );
     }
   };
   
-  // Handle reaction click
   const handleReaction = (emoji: string) => {
     if (!user) return;
     
-    // Check if user already reacted with this emoji
     const existingReaction = message.reactions?.find(r => 
       r.userId === user.id && r.reaction === emoji
     );
     
     if (existingReaction) {
-      // Remove reaction
       removeReaction(message.id, contactId, emoji)
         .catch(() => toast.error('Failed to remove reaction'));
     } else {
-      // Add reaction
       addReaction(message.id, contactId, emoji)
         .catch(() => toast.error('Failed to add reaction'));
     }
@@ -202,7 +199,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
     setShowReactionPicker(false);
   };
   
-  // Group reactions by emoji
   const groupedReactions = React.useMemo(() => {
     if (!message.reactions || message.reactions.length === 0) return {};
     
@@ -215,7 +211,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
     }, {} as Record<string, string[]>);
   }, [message.reactions]);
   
-  // Handle edit submission
   const handleEditSubmit = () => {
     if (editText.trim() === '') return;
     
@@ -227,7 +222,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
       .catch(() => toast.error('Failed to update message'));
   };
   
-  // Handle delete message
   const handleDelete = () => {
     if (window.confirm('Are you sure you want to delete this message?')) {
       deleteMessage(message.id, contactId)
@@ -237,7 +231,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
     setShowContextMenu(false);
   };
   
-  // Handle reply submission
   const handleReplySubmit = () => {
     if (replyText.trim() === '') return;
     
@@ -249,58 +242,94 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
       })
       .catch(() => toast.error('Failed to send reply'));
   };
-  
-  // Format timestamp
-  const formattedTimestamp = (() => {
-    try {
-      // Check if timestamp is valid
-      if (!message.timestamp) return '';
-      
-      // Use our new timezone-aware formatter
-      return formatMessageTime(message.timestamp);
-    } catch (error) {
-      console.error('Error formatting message timestamp:', error, message);
-      return '';
+
+  const getMessageClass = () => {
+    const baseClasses = "relative rounded-2xl shadow-md transition-all";
+    const ownClasses = "bg-gradient-to-br from-primary-500 to-primary-600 dark:from-primary-600 dark:to-primary-700 text-white rounded-br-md";
+    const otherClasses = "bg-white dark:bg-dark-800 text-gray-800 dark:text-gray-200 rounded-bl-md border border-gray-100 dark:border-dark-700";
+    
+    return `${baseClasses} ${isOwn ? ownClasses : otherClasses}`;
+  }
+
+  const getContextButtonClass = () => {
+    return isOwn 
+      ? "text-white/70 hover:text-white bg-primary-700/30 hover:bg-primary-700/50" 
+      : "text-gray-400 hover:text-gray-600 bg-gray-100/70 hover:bg-gray-200/70 dark:bg-dark-700/50 dark:hover:bg-dark-600/70";
+  }
+
+  const getFooterClass = () => {
+    return isOwn 
+      ? "text-white/70" 
+      : "text-gray-400 dark:text-gray-500";
+  }
+
+  const getReactionBtnClass = (userIds: string[]) => {
+    const baseClass = "flex items-center rounded-full px-2 py-1 mr-1.5 cursor-pointer transition-all transform hover:scale-105";
+    const ownClass = userIds.includes(user?.id || '') 
+      ? "bg-primary-700/80 text-white shadow-md" 
+      : "bg-primary-700/40 text-white hover:bg-primary-700/60";
+    const otherClass = userIds.includes(user?.id || '') 
+      ? "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/50 shadow-md" 
+      : "bg-white dark:bg-dark-800 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-dark-600 hover:bg-gray-50 dark:hover:bg-dark-700/70";
+    
+    return `${baseClass} ${isOwn ? ownClass : otherClass}`;
+  }
+
+  const renderMessageStatus = () => {
+    if (!isOwn) return null;
+    
+    if (message.status === 'sent') {
+      return <CheckIcon className="h-3.5 w-3.5" />;
+    } else if (message.status === 'delivered') {
+      return (
+        <div className="flex">
+          <CheckIcon className="h-3.5 w-3.5" />
+          <CheckIcon className="h-3.5 w-3.5 -ml-1.5" />
+        </div>
+      );
+    } else if (message.status === 'read') {
+      return (
+        <div className="flex text-blue-400">
+          <CheckIcon className="h-3.5 w-3.5" />
+          <CheckIcon className="h-3.5 w-3.5 -ml-1.5" />
+        </div>
+      );
     }
-  })();
+    
+    return null;
+  };
 
   return (
-    <div className={`flex mb-3 animate-slide-up ${isOwn ? 'justify-end' : 'justify-start'}`} ref={messageRef}>
-      <div className="relative group">
-        {/* Profile photo for contact's messages only */}
+    <div 
+      className={`flex mb-4 animate-fade-in ${isOwn ? 'justify-end' : 'justify-start'} group/msg`} 
+      ref={messageRef}
+    >
+      <div className="relative max-w-md">
         {!isOwn && (
-          <div className="absolute -left-12 -top-1">
-            <img 
-              src={contact?.contact_avatar_url || generateAvatarUrl(contact?.contact_display_name || '', 40)} 
-              alt={senderName}
-              className="h-8 w-8 rounded-full object-cover shadow-sm"
-            />
+          <div className="absolute -left-12 top-0">
+            <div className="relative">
+              <img 
+                src={contact?.contact_avatar_url || generateAvatarUrl(contact?.contact_display_name || '', 40)} 
+                alt={senderName}
+                className="h-8 w-8 rounded-full object-cover shadow-md ring-2 ring-white dark:ring-dark-900"
+              />
+              <div className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 ring-2 ring-white dark:ring-dark-900"></div>
+            </div>
           </div>
         )}
         
-        {/* Main message bubble */}
-        <div
-          className={`max-w-md relative ${
-            isOwn
-              ? 'bg-primary-600 dark:bg-primary-700 text-white rounded-2xl rounded-br-none shadow-soft-md'
-              : 'bg-white dark:bg-dark-800 text-gray-800 dark:text-gray-200 rounded-2xl rounded-bl-none shadow-soft'
-          }`}
-        >
-          {/* Context menu trigger */}
+        <div className={getMessageClass()}>
           <button 
             onClick={() => setShowContextMenu(!showContextMenu)}
-            className={`absolute top-1 right-1 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity ${
-              isOwn ? 'text-primary-200 hover:text-white hover:bg-primary-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-dark-700'
-            }`}
+            className={`absolute top-2 right-2 p-1.5 rounded-full opacity-0 group-hover/msg:opacity-100 transition-opacity ${getContextButtonClass()}`}
           >
             <EllipsisHorizontalIcon className="h-4 w-4" />
           </button>
           
-          {/* Context menu */}
           {showContextMenu && (
             <div 
               ref={contextMenuRef}
-              className="absolute right-0 top-8 z-10 w-40 bg-white dark:bg-dark-800 rounded-md shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none"
+              className="absolute right-0 top-10 z-10 w-44 bg-white dark:bg-dark-800 rounded-lg shadow-lg ring-1 ring-black/5 dark:ring-white/10 focus:outline-none overflow-hidden"
             >
               <div className="py-1">
                 <button
@@ -308,9 +337,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
                     setShowReactionPicker(true);
                     setShowContextMenu(false);
                   }}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
+                  className="w-full text-left px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
                 >
-                  <FaceSmileIcon className="h-4 w-4 mr-2" />
+                  <FaceSmileIcon className="h-4 w-4 mr-2.5 text-gray-500 dark:text-gray-400" />
                   React
                 </button>
                 <button
@@ -318,28 +347,29 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
                     setReplyMode(true);
                     setShowContextMenu(false);
                   }}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
+                  className="w-full text-left px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
                 >
-                  <ArrowUturnLeftIcon className="h-4 w-4 mr-2" />
+                  <ArrowUturnLeftIcon className="h-4 w-4 mr-2.5 text-gray-500 dark:text-gray-400" />
                   Reply
                 </button>
                 {isOwn && !message.isDeleted && (
                   <>
+                    <div className="border-t border-gray-200 dark:border-dark-600 my-1"></div>
                     <button
                       onClick={() => {
                         setIsEditing(true);
                         setShowContextMenu(false);
                       }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
                     >
-                      <PencilIcon className="h-4 w-4 mr-2" />
+                      <PencilIcon className="h-4 w-4 mr-2.5 text-gray-500 dark:text-gray-400" />
                       Edit
                     </button>
                     <button
                       onClick={handleDelete}
-                      className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
+                      className="w-full text-left px-4 py-2.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center"
                     >
-                      <TrashIcon className="h-4 w-4 mr-2" />
+                      <TrashIcon className="h-4 w-4 mr-2.5" />
                       Delete
                     </button>
                   </>
@@ -348,14 +378,13 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
             </div>
           )}
           
-          {/* Reaction picker */}
           {showReactionPicker && (
-            <div className="absolute -top-10 left-1/2 transform -translate-x-1/2 bg-white dark:bg-dark-800 rounded-full shadow-lg p-1 flex z-10">
+            <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-white dark:bg-dark-800 rounded-full shadow-lg p-1.5 flex z-10 border border-gray-100 dark:border-dark-700">
               {REACTIONS.map(emoji => (
                 <button
                   key={emoji}
                   onClick={() => handleReaction(emoji)}
-                  className="p-1.5 hover:bg-gray-100 dark:hover:bg-dark-700 rounded-full text-lg"
+                  className="p-2 hover:bg-gray-100 dark:hover:bg-dark-700 rounded-full text-lg transition-transform hover:scale-110"
                 >
                   {emoji}
                 </button>
@@ -363,55 +392,50 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
             </div>
           )}
           
-          {/* Reply reference */}
           {replyToMessage && (
-            <div 
-              className={`mx-4 mt-3 pt-2 px-3 pb-1 border-l-2 rounded-sm text-xs ${
-                isOwn 
-                  ? 'border-primary-300 dark:border-primary-300 bg-primary-700 dark:bg-primary-800'
-                  : 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-dark-700'
-              }`}
-            >
-              <div className={`font-medium ${isOwn ? 'text-primary-200' : 'text-gray-500 dark:text-gray-400'}`}>
+            <div className={`mx-4 mt-3 pt-2 px-3 pb-1.5 border-l-2 rounded-sm text-xs ${
+              isOwn 
+                ? 'border-primary-300/70 dark:border-primary-300/50 bg-primary-700/30 dark:bg-primary-800/30'
+                : 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-dark-700/50'
+            }`}>
+              <div className={`font-medium ${isOwn ? 'text-white/90' : 'text-gray-600 dark:text-gray-300'}`}>
                 {replyToMessage.senderId === user?.id ? 'You' : contact?.contact_display_name || 'Unknown'}
               </div>
-              <p className={`truncate ${isOwn ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>
+              <p className={`truncate ${isOwn ? 'text-white/80' : 'text-gray-600 dark:text-gray-300'}`}>
                 {replyToMessage.isDeleted ? 'This message was deleted' : replyToMessage.text}
               </p>
             </div>
           )}
           
-          {/* Attachments */}
           {message.attachments && message.attachments.length > 0 && !message.isDeleted && (
-            <div className="p-2">
+            <div className="p-3">
               {message.attachments.map((attachment, index) => (
                 <React.Fragment key={`${message.id}-attachment-${index}`}>
-                  {renderAttachment(attachment, index)}
+                  {renderAttachment(attachment)}
                 </React.Fragment>
               ))}
             </div>
           )}
           
-          {/* Message text or edit form */}
           {isEditing ? (
-            <div className="p-3">
+            <div className="p-4">
               <textarea
                 ref={textInputRef}
                 value={editText}
                 onChange={(e) => setEditText(e.target.value)}
-                className="w-full p-2 border rounded-md bg-white dark:bg-dark-700 text-gray-800 dark:text-gray-200 focus:ring-primary-500 dark:focus:ring-secondary-500 resize-none"
+                className="w-full p-3 border rounded-lg bg-white dark:bg-dark-700 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-primary-500 dark:focus:ring-secondary-500 focus:border-transparent resize-none shadow-inner"
                 rows={2}
               />
-              <div className="flex justify-end mt-2 space-x-2">
+              <div className="flex justify-end mt-3 space-x-2">
                 <button
                   onClick={() => setIsEditing(false)}
-                  className="px-3 py-1 text-xs text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-dark-700 rounded-md hover:bg-gray-200 dark:hover:bg-dark-600"
+                  className="px-4 py-1.5 text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-dark-700 rounded-md hover:bg-gray-200 dark:hover:bg-dark-600 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleEditSubmit}
-                  className="px-3 py-1 text-xs text-white bg-primary-600 dark:bg-secondary-600 rounded-md hover:bg-primary-700 dark:hover:bg-secondary-700"
+                  className="px-4 py-1.5 text-sm text-white bg-primary-600 dark:bg-secondary-600 rounded-md hover:bg-primary-700 dark:hover:bg-secondary-700 transition-colors shadow-sm"
                 >
                   Save
                 </button>
@@ -419,14 +443,17 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
             </div>
           ) : (
             message.text && (
-              <div className={`px-4 py-2.5 ${message.attachments && message.attachments.length > 0 ? 'pt-0' : ''}`}>
+              <div className={`px-4 py-3 ${message.attachments && message.attachments.length > 0 ? 'pt-0' : ''}`}>
                 {message.isDeleted ? (
-                  <p className="text-sm italic opacity-60">This message was deleted</p>
+                  <p className="text-sm italic opacity-60 flex items-center">
+                    <TrashIcon className="h-3.5 w-3.5 mr-1 opacity-70" />
+                    This message was deleted
+                  </p>
                 ) : (
-                  <p className="whitespace-pre-wrap text-sm">{message.text}</p>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.text}</p>
                 )}
                 {message.isEdited && !message.isDeleted && (
-                  <span className={`text-xs ${isOwn ? 'text-primary-200' : 'text-gray-400 dark:text-gray-500'}`}>
+                  <span className={`text-xs ml-1 ${isOwn ? 'text-white/70' : 'text-gray-400 dark:text-gray-500'}`}>
                     (edited)
                   </span>
                 )}
@@ -434,84 +461,52 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
             )
           )}
           
-          {/* Message footer: timestamp and status */}
-          <div 
-            className={`flex items-center justify-end px-4 pb-1.5 text-xs 
-              ${isOwn 
-                ? 'text-primary-200 dark:text-primary-300' 
-                : 'text-gray-400 dark:text-gray-500'
-              }`
-            }
-          >
-            <span>{formattedTimestamp}</span>
+          <div className={`flex items-center justify-end px-4 pb-2 pt-0.5 text-xs ${getFooterClass()}`}>
+            <span className="font-medium">{formattedTimestamp}</span>
             
             {isOwn && (
-              <div className="ml-1 flex">
-                {message.status === 'sent' && (
-                  <CheckIcon className="h-3 w-3" />
-                )}
-                {message.status === 'delivered' && (
-                  <div className="flex">
-                    <CheckIcon className="h-3 w-3" />
-                    <CheckIcon className="h-3 w-3 -ml-1" />
-                  </div>
-                )}
-                {message.status === 'read' && (
-                  <div className="flex text-blue-400">
-                    <CheckIcon className="h-3 w-3" />
-                    <CheckIcon className="h-3 w-3 -ml-1" />
-                  </div>
-                )}
+              <div className="ml-1.5 flex">
+                {renderMessageStatus()}
               </div>
             )}
           </div>
           
-          {/* Reactions display */}
           {message.reactions && message.reactions.length > 0 && (
-            <div className={`flex -bottom-3 px-1 rounded-full text-xs absolute ${
-              isOwn ? 'left-0' : 'right-0'
-            }`}>
+            <div className={`flex -bottom-4 px-1 rounded-full text-xs absolute ${isOwn ? 'left-1' : 'right-1'}`}>
               {Object.entries(groupedReactions).map(([emoji, userIds]) => (
                 <div 
                   key={emoji}
-                  className={`flex items-center rounded-full px-1.5 py-0.5 mr-1 cursor-pointer
-                    ${isOwn
-                      ? 'bg-primary-700 text-white hover:bg-primary-800' 
-                      : 'bg-white dark:bg-dark-800 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-dark-600 hover:bg-gray-100 dark:hover:bg-dark-700'
-                    }
-                    ${userIds.includes(user?.id || '') ? 'ring-1 ring-blue-400' : ''}
-                  `}
+                  className={getReactionBtnClass(userIds)}
                   onClick={() => handleReaction(emoji)}
                 >
                   <span className="mr-1">{emoji}</span>
-                  <span>{userIds.length}</span>
+                  <span className="font-medium">{userIds.length}</span>
                 </div>
               ))}
             </div>
           )}
         </div>
         
-        {/* Reply form */}
         {replyMode && (
-          <div className={`mt-2 p-2 rounded-xl ${isOwn ? 'bg-primary-50 dark:bg-dark-800' : 'bg-gray-50 dark:bg-dark-700'}`}>
+          <div className={`mt-3 p-3 rounded-xl bg-white dark:bg-dark-800 shadow-md border ${isOwn ? 'border-primary-100 dark:border-primary-900/30' : 'border-gray-100 dark:border-dark-700'}`}>
             <textarea
               ref={replyInputRef}
               value={replyText}
               onChange={(e) => setReplyText(e.target.value)}
               placeholder="Type your reply..."
-              className="w-full p-2 border rounded-md bg-white dark:bg-dark-700 text-gray-800 dark:text-gray-200 focus:ring-primary-500 dark:focus:ring-secondary-500 resize-none"
+              className="w-full p-3 border rounded-lg bg-white dark:bg-dark-700 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-primary-500 dark:focus:ring-secondary-500 focus:border-transparent resize-none shadow-inner"
               rows={2}
             />
-            <div className="flex justify-end mt-2 space-x-2">
+            <div className="flex justify-end mt-3 space-x-2">
               <button
                 onClick={() => setReplyMode(false)}
-                className="px-3 py-1 text-xs text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-dark-700 rounded-md hover:bg-gray-200 dark:hover:bg-dark-600"
+                className="px-4 py-1.5 text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-dark-700 rounded-md hover:bg-gray-200 dark:hover:bg-dark-600 transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={handleReplySubmit}
-                className="px-3 py-1 text-xs text-white bg-primary-600 dark:bg-secondary-600 rounded-md hover:bg-primary-700 dark:hover:bg-secondary-700"
+                className="px-4 py-1.5 text-sm text-white bg-primary-600 dark:bg-secondary-600 rounded-md hover:bg-primary-700 dark:hover:bg-secondary-700 transition-colors shadow-sm"
               >
                 Reply
               </button>
@@ -523,4 +518,4 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
   );
 };
 
-export default MessageBubble; 
+export default MessageBubble;
