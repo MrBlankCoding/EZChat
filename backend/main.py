@@ -1,10 +1,16 @@
 import uvicorn
 import logging
 import os
+import psutil
+import platform
+from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, ORJSONResponse
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
+import time
+import orjson
 
 # Load environment variables
 load_dotenv()
@@ -25,6 +31,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Set FastAPI's access logs to a higher level to reduce verbosity
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+# Reduce noise from connection events
+logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+# Only show HTTP requests in debug mode
+if os.getenv("DEBUG", "False").lower() != "true":
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -43,15 +57,26 @@ async def lifespan(app: FastAPI):
     await close_mongodb_connection()
 
 
-# Initialize FastAPI app
+# Initialize FastAPI app with performance-optimized settings
 app = FastAPI(
     title="EZChat Backend API",
     description="Backend API for EZChat application",
     version="1.0.0",
     lifespan=lifespan,
+    # Use orjson for faster JSON serialization/deserialization
+    default_response_class=ORJSONResponse,
+    # Don't validate response model by default for better performance
+    response_model_exclude_unset=True,
+    response_model_exclude_none=True,
+    # Customize OpenAPI to minimize its size
+    openapi_url=(
+        "/api/openapi.json" if os.getenv("DEBUG", "False").lower() == "true" else None
+    ),
+    docs_url="/docs" if os.getenv("DEBUG", "False").lower() == "true" else None,
+    redoc_url="/redoc" if os.getenv("DEBUG", "False").lower() == "true" else None,
 )
 
-# Configure CORS
+# Configure CORS with optimized settings
 allowed_origins = os.getenv("CORS_ORIGINS", "").split(",")
 # For development, include explicit origins
 if os.getenv("DEBUG", "False").lower() == "true":
@@ -83,16 +108,39 @@ app.add_middleware(
 )
 
 
-# Add request logging middleware
+# Add request logging middleware with performance optimization
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    logger.debug(f"Request: {request.method} {request.url.path}")
+    # Skip logging for static files and health checks
+    path = request.url.path
+    if path.startswith("/static") or path == "/health" or path == "/favicon.ico":
+        return await call_next(request)
+
+    # Track request processing time for performance monitoring
+    start_time = time.time()
+
+    # Only log non-GET requests or if debug is enabled
+    if request.method != "GET" or os.getenv("DEBUG", "False").lower() == "true":
+        logger.debug(f"Request: {request.method} {path}")
+
     response = await call_next(request)
-    logger.debug(f"Response status: {response.status_code}")
+
+    # Calculate processing time
+    process_time = time.time() - start_time
+
+    # Log slow responses (> 1 second) or error responses
+    if process_time > 1.0 or response.status_code >= 400:
+        logger.info(
+            f"Response: {request.method} {path} - Status: {response.status_code} - Time: {process_time:.2f}s"
+        )
+
+    # Add processing time header for performance monitoring
+    response.headers["X-Process-Time"] = str(process_time)
+
     return response
 
 
-# Add custom CORS middleware to ensure headers are set for all responses
+# Add custom CORS headers middleware - simplify for better performance
 @app.middleware("http")
 async def add_cors_headers(request: Request, call_next):
     # Process the request and get the response
@@ -101,16 +149,16 @@ async def add_cors_headers(request: Request, call_next):
     # Add CORS headers to every response
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = (
-        "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-    )
-    response.headers["Access-Control-Allow-Headers"] = (
-        "Content-Type, Authorization, Accept"
-    )
 
     # For preflight requests
     if request.method == "OPTIONS":
         response.status_code = 200
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        )
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, Accept"
+        )
 
     return response
 
@@ -132,16 +180,82 @@ async def root():
     }
 
 
-# Health check endpoint
+# Optimized health check endpoint
 @app.get("/health", tags=["Health"])
 async def health_check():
     return {"status": "healthy"}
+
+
+# System monitoring endpoint
+@app.get("/api/system", tags=["System"])
+async def system_info():
+    """Get system performance metrics for monitoring."""
+    if os.getenv("DEBUG", "False").lower() != "true":
+        return {"error": "This endpoint is only available in debug mode"}
+
+    # Get system metrics
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+
+    # Get server uptime
+    boot_time = datetime.fromtimestamp(psutil.boot_time())
+    uptime = datetime.now() - boot_time
+
+    # Get process info
+    process = psutil.Process(os.getpid())
+    process_memory = process.memory_info().rss / (1024 * 1024)  # MB
+
+    # Get active connections count (approximate)
+    connections = len(process.connections())
+
+    return {
+        "system": {
+            "cpu_percent": cpu_percent,
+            "memory_percent": memory.percent,
+            "memory_used_gb": memory.used / (1024**3),
+            "memory_total_gb": memory.total / (1024**3),
+            "disk_percent": disk.percent,
+            "disk_free_gb": disk.free / (1024**3),
+            "disk_total_gb": disk.total / (1024**3),
+            "platform": platform.platform(),
+            "python_version": platform.python_version(),
+            "uptime_seconds": uptime.total_seconds(),
+        },
+        "process": {
+            "memory_mb": process_memory,
+            "connections": connections,
+            "threads": process.num_threads(),
+            "pid": process.pid,
+        },
+        "timestamp": datetime.now().isoformat(),
+    }
 
 
 if __name__ == "__main__":
     host = os.getenv("API_HOST", "0.0.0.0")
     port = int(os.getenv("API_PORT", "8000"))
     reload = os.getenv("DEBUG", "False").lower() == "true"
+    workers = int(os.getenv("WORKERS", "0")) or None  # Set to None for auto-detection
 
-    logger.info(f"Starting server on {host}:{port}")
-    uvicorn.run("main:app", host=host, port=port, reload=reload)
+    logger.info(
+        f"Starting server on {host}:{port} with {workers or 'auto-detected'} workers"
+    )
+
+    # In debug/reload mode, we can't use multiple workers
+    if reload:
+        workers = None
+        logger.info("Debug mode enabled - workers set to 1 for hot reloading")
+
+    uvicorn.run(
+        "main:app",
+        host=host,
+        port=port,
+        reload=reload,
+        workers=None if reload else workers,  # Can't use workers with reload
+        loop="uvloop",  # Use uvloop for better performance
+        http="httptools",  # Use httptools for better performance
+        limit_concurrency=1000,  # Limit concurrent connections
+        backlog=2048,  # Increase connection queue size
+        timeout_keep_alive=5,  # Reduce idle connection time
+    )

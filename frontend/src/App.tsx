@@ -11,6 +11,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './context/AuthProvider';
 import timezoneService from './services/timezoneService';
+import presenceManager from './services/presenceManager';
 
 function App() {
   const { isAuthenticated, initialized, checkAuth } = useAuthStore();
@@ -20,10 +21,19 @@ function App() {
     checkAuth();
   }, [checkAuth]);
   
-  // Initialize timezone service when authenticated
+  // Initialize services when authenticated
   useEffect(() => {
     if (isAuthenticated) {
+      // Initialize timezone service
       timezoneService.initialize();
+      
+      // Initialize presence manager for status tracking
+      presenceManager.initialize();
+      
+      // Clean up on unmount
+      return () => {
+        presenceManager.cleanup();
+      };
     }
   }, [isAuthenticated]);
   

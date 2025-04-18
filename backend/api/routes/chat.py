@@ -113,17 +113,34 @@ async def get_chat_history(
 
     # Mark unread messages as read
     unread_ids = [
-        ObjectId(msg.id)
+        (
+            ObjectId(msg.id)
+            if len(msg.id) == 24
+            and all(c in "0123456789abcdef" for c in msg.id.lower())
+            else msg.id
+        )
         for msg in processed_messages
         if msg.recipient_id == current_user.firebase_uid and msg.status != "read"
     ]
 
     if unread_ids:
         now = datetime.utcnow()
-        await messages_collection.update_many(
-            {"_id": {"$in": unread_ids}},
-            {"$set": {"status": "read", "read_at": now}},
-        )
+        # Filter out any IDs that aren't ObjectId objects
+        object_ids = [msg_id for msg_id in unread_ids if isinstance(msg_id, ObjectId)]
+
+        if object_ids:
+            await messages_collection.update_many(
+                {"_id": {"$in": object_ids}},
+                {"$set": {"status": "read", "read_at": now}},
+            )
+
+        # Handle string IDs (from websocket) separately
+        string_ids = [msg_id for msg_id in unread_ids if isinstance(msg_id, str)]
+        if string_ids:
+            await messages_collection.update_many(
+                {"_id": {"$in": string_ids}},
+                {"$set": {"status": "read", "read_at": now}},
+            )
 
     # Sort messages by created_at
     processed_messages.sort(key=lambda x: x.created_at)
@@ -226,17 +243,36 @@ async def get_conversation_with_messages(
 
     # Mark unread messages as read
     unread_messages = [
-        ObjectId(msg["_id"])
+        (
+            ObjectId(msg["_id"])
+            if len(msg["_id"]) == 24
+            and all(c in "0123456789abcdef" for c in msg["_id"].lower())
+            else msg["_id"]
+        )
         for msg in messages
         if msg["recipient_id"] == current_user.firebase_uid and msg["status"] != "read"
     ]
 
     if unread_messages:
         now = datetime.utcnow()
-        await messages_collection.update_many(
-            {"_id": {"$in": unread_messages}},
-            {"$set": {"status": "read", "read_at": now}},
-        )
+        # Filter out any IDs that aren't ObjectId objects
+        object_ids = [
+            msg_id for msg_id in unread_messages if isinstance(msg_id, ObjectId)
+        ]
+
+        if object_ids:
+            await messages_collection.update_many(
+                {"_id": {"$in": object_ids}},
+                {"$set": {"status": "read", "read_at": now}},
+            )
+
+        # Handle string IDs (from websocket) separately
+        string_ids = [msg_id for msg_id in unread_messages if isinstance(msg_id, str)]
+        if string_ids:
+            await messages_collection.update_many(
+                {"_id": {"$in": string_ids}},
+                {"$set": {"status": "read", "read_at": now}},
+            )
 
     # Sort messages by created_at
     messages.sort(key=lambda x: x["created_at"])

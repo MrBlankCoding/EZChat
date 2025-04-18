@@ -1,3 +1,7 @@
+// Define browser if it's not defined (fix for "browser is not defined" error)
+// This is needed because some Firebase libraries try to use the browser Extension API
+self.browser = self.browser || {};
+
 // Give the service worker access to Firebase Messaging.
 // Note that you can only use Firebase Messaging here.
 importScripts(

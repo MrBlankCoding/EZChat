@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "ezchat")
 
+# MongoDB connection pool settings
+MAX_POOL_SIZE = int(os.getenv("MONGODB_MAX_POOL_SIZE", "100"))
+MIN_POOL_SIZE = int(os.getenv("MONGODB_MIN_POOL_SIZE", "10"))
+MAX_IDLE_TIME_MS = int(os.getenv("MONGODB_MAX_IDLE_TIME_MS", "60000"))
+SOCKET_TIMEOUT_MS = int(os.getenv("MONGODB_SOCKET_TIMEOUT_MS", "5000"))
+CONNECT_TIMEOUT_MS = int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "5000"))
+SERVER_SELECTION_TIMEOUT_MS = int(
+    os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")
+)
+
 # MongoDB client and database objects
 client: AsyncIOMotorClient = None
 db = None
@@ -26,7 +36,17 @@ async def connect_to_mongodb():
 
     logger.info("Connecting to MongoDB...")
     try:
-        client = AsyncIOMotorClient(MONGODB_URI)
+        client = AsyncIOMotorClient(
+            MONGODB_URI,
+            maxPoolSize=MAX_POOL_SIZE,
+            minPoolSize=MIN_POOL_SIZE,
+            maxIdleTimeMS=MAX_IDLE_TIME_MS,
+            socketTimeoutMS=SOCKET_TIMEOUT_MS,
+            connectTimeoutMS=CONNECT_TIMEOUT_MS,
+            serverSelectionTimeoutMS=SERVER_SELECTION_TIMEOUT_MS,
+            retryWrites=True,
+            retryReads=True,
+        )
         # Verify the connection
         await client.admin.command("ping")
 

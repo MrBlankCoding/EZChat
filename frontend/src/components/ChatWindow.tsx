@@ -17,9 +17,10 @@ import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage } from '../services/firebaseConfig';
 import MessageBubble from './MessageBubble';
 import TypingIndicator from './TypingIndicator';
+import StatusIndicator from './StatusIndicator';
 import { generateAvatarUrl } from '../utils/avatarUtils';
 import { useWebSocketConnection } from '../hooks/useWebSocketConnection';
-import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
+import EmojiPicker, { EmojiClickData, Theme, EmojiStyle, Categories } from 'emoji-picker-react';
 
 interface ChatWindowProps {
   contactId: string;
@@ -45,6 +46,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [activityNotifications, setActivityNotifications] = useState<ActivityNotification[]>([]);
   const observedMessagesRef = useRef<Set<string>>(new Set());
+  
+  // Keep a reference to the previous conversation state to compare for changes
+  const previousMessagesRef = useRef<Record<string, any>>({});
   
   const { user } = useAuthStore();
   const { conversations, typingIndicators } = useChatStore();
@@ -173,6 +177,105 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     return () => document.removeEventListener('keydown', handleEscapeKey);
   }, [showEmojiPicker]);
   
+  // Define the showActivityNotification function before using it in useEffect
+  const showActivityNotification = useCallback((type: ActivityType, userId: string, messageId?: string) => {
+    if (userId === user?.id) return;
+    
+    const id = `${type}-${userId}-${messageId || ''}-${Date.now()}`;
+    
+    setActivityNotifications(prev => [
+      ...prev,
+      { id, type, userId, messageId, timestamp: Date.now() }
+    ]);
+    
+    setTimeout(() => {
+      setActivityNotifications(prev => prev.filter(n => n.id !== id));
+    }, 3000);
+  }, [user?.id]);
+  
+  // Effect to watch for changes in messages, particularly edits, deletes, and reactions
+  useEffect(() => {
+    if (!contactId || !user) return;
+    
+    const currentMessages = conversations[contactId]?.messages || [];
+    const currentMessagesById = Object.fromEntries(
+      currentMessages.map(msg => [msg.id, msg])
+    );
+    
+    // Initialize the previous messages reference if it doesn't exist for this contact
+    if (!previousMessagesRef.current[contactId]) {
+      previousMessagesRef.current[contactId] = { ...currentMessagesById };
+      return; // First load, nothing to compare
+    }
+    
+    const prevMessagesById = previousMessagesRef.current[contactId] || {};
+    
+    // Check for changes in existing messages
+    Object.keys(currentMessagesById).forEach(msgId => {
+      const currentMsg = currentMessagesById[msgId];
+      const prevMsg = prevMessagesById[msgId];
+      
+      // Skip if message is new (not in previous state)
+      if (!prevMsg) return;
+      
+      // Check for reaction changes
+      if (JSON.stringify(prevMsg.reactions) !== JSON.stringify(currentMsg.reactions)) {
+        console.log(`[ChatWindow] Detected reaction change for message ${msgId}`);
+        showActivityNotification('react', currentMsg.senderId, msgId);
+      }
+      
+      // Check for edits
+      if (prevMsg.text !== currentMsg.text && currentMsg.isEdited) {
+        console.log(`[ChatWindow] Detected edit for message ${msgId}`);
+        showActivityNotification('edit', currentMsg.senderId, msgId);
+      }
+      
+      // Check for deletions
+      if (!prevMsg.isDeleted && currentMsg.isDeleted) {
+        console.log(`[ChatWindow] Detected deletion for message ${msgId}`);
+        showActivityNotification('delete', currentMsg.senderId, msgId);
+      }
+      
+      // Check for read receipts
+      if (prevMsg.status !== 'read' && currentMsg.status === 'read') {
+        console.log(`[ChatWindow] Detected read receipt for message ${msgId}`);
+        showActivityNotification('read', contactId, msgId);
+      }
+    });
+    
+    // Update the previous messages reference
+    previousMessagesRef.current[contactId] = { ...currentMessagesById };
+  }, [contactId, user, conversations, showActivityNotification]);
+  
+  // Force a refresh on WebSocket events to ensure UI updates
+  useEffect(() => {
+    if (!contactId) return;
+    
+    console.log('[ChatWindow] Setting up WebSocket event subscription for', contactId);
+    
+    const handleWebSocketEvent = () => {
+      console.log('[ChatWindow] WebSocket event received, forcing state refresh');
+      
+      // Force a complete rebuild of the previous messages reference
+      // This ensures the next comparison will detect changes
+      const currentConversation = conversations[contactId];
+      if (currentConversation && currentConversation.messages) {
+        // Set to empty object first to ensure we'll detect all changes
+        previousMessagesRef.current[contactId] = {};
+        
+        // Force a re-render by updating state
+        setActivityNotifications(prev => [...prev]);
+      }
+    };
+    
+    const unsubscribe = websocketService.subscribeToEvents(handleWebSocketEvent);
+    
+    return () => {
+      console.log('[ChatWindow] Cleaning up WebSocket event subscription');
+      if (unsubscribe) unsubscribe();
+    };
+  }, [contactId, conversations]);
+  
   const handleTyping = () => {
     if (!isTyping) {
       setIsTyping(true);
@@ -286,55 +389,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     }
     setShowAttachMenu(false);
   };
-  
-  const showActivityNotification = useCallback((type: ActivityType, userId: string, messageId?: string) => {
-    if (userId === user?.id) return;
-    
-    const id = `${type}-${userId}-${Date.now()}`;
-    
-    setActivityNotifications(prev => [
-      ...prev,
-      { id, type, userId, messageId, timestamp: Date.now() }
-    ]);
-    
-    setTimeout(() => {
-      setActivityNotifications(prev => prev.filter(n => n.id !== id));
-    }, 3000);
-  }, [user?.id]);
-  
-  useEffect(() => {
-    if (!contactId || !user) return;
-    
-    const prevConversation = conversations[contactId]?.messages || [];
-    
-    return () => {
-      const currentConversation = conversations[contactId]?.messages || [];
-      
-      if (prevConversation.length === currentConversation.length) return;
-      
-      currentConversation.forEach(msg => {
-        const prevMsg = prevConversation.find(m => m.id === msg.id);
-        
-        if (!prevMsg) return;
-        
-        if (JSON.stringify(prevMsg.reactions) !== JSON.stringify(msg.reactions)) {
-          showActivityNotification('react', msg.senderId, msg.id);
-        }
-        
-        if (prevMsg.text !== msg.text && msg.isEdited) {
-          showActivityNotification('edit', msg.senderId, msg.id);
-        }
-        
-        if (!prevMsg.isDeleted && msg.isDeleted) {
-          showActivityNotification('delete', msg.senderId, msg.id);
-        }
-        
-        if (prevMsg.status !== 'read' && msg.status === 'read') {
-          showActivityNotification('read', contactId, msg.id);
-        }
-      });
-    };
-  }, [contactId, user, conversations, showActivityNotification]);
   
   const renderActivityNotifications = () => {
     if (activityNotifications.length === 0) return null;
@@ -489,6 +543,46 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     inputRef.current?.focus();
   };
   
+  // Define emoji picker categories with correct type
+  const emojiCategories = [
+    {
+      name: "Recently Used",
+      category: Categories.SUGGESTED
+    },
+    {
+      name: "Smileys & People",
+      category: Categories.SMILEYS_PEOPLE
+    },
+    {
+      name: "Animals & Nature",
+      category: Categories.ANIMALS_NATURE
+    },
+    {
+      name: "Food & Drink",
+      category: Categories.FOOD_DRINK
+    },
+    {
+      name: "Travel & Places",
+      category: Categories.TRAVEL_PLACES
+    },
+    {
+      name: "Activities",
+      category: Categories.ACTIVITIES
+    },
+    {
+      name: "Objects",
+      category: Categories.OBJECTS
+    },
+    {
+      name: "Symbols",
+      category: Categories.SYMBOLS
+    },
+    {
+      name: "Flags",
+      category: Categories.FLAGS
+    }
+  ];
+  
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       <div className="bg-white dark:bg-dark-800 shadow-sm p-3 flex items-center border-b border-gray-200 dark:border-dark-700">
@@ -499,19 +593,26 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
               alt={contact?.contact_display_name || 'User'} 
               className="absolute inset-0 w-full h-full object-cover"
             />
-            <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-dark-800 ${
-              contact?.contact_status === 'online' ? 'bg-green-500' : 'bg-gray-400'
-            }`} />
+            <div className="absolute bottom-0 right-0">
+              <StatusIndicator 
+                status={conversation?.contactStatus || contact?.contact_status || 'offline'} 
+                size="sm"
+              />
+            </div>
           </div>
           <div className="flex items-center flex-1">
             <div>
               <h2 className="font-semibold text-gray-900 dark:text-white">
                 {contact?.contact_display_name || 'Loading...'}
               </h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                {contact?.contact_status === 'online' ? 'Online' : 'Offline'}
-                {isContactTyping && ' • Typing...'}
-              </p>
+              <div className="flex items-center">
+                <StatusIndicator 
+                  status={conversation?.contactStatus || contact?.contact_status || 'offline'} 
+                  size="sm" 
+                  showLabel={true} 
+                />
+                {isContactTyping && <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">• Typing...</span>}
+              </div>
             </div>
           </div>
         </div>
@@ -555,49 +656,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
                     lazyLoadEmojis={true}
                     searchDisabled={false}
                     skinTonesDisabled={false}
-                    emojiStyle={document.documentElement.classList.contains('dark') ? "native" : "apple"}
+                    emojiStyle={document.documentElement.classList.contains('dark') ? EmojiStyle.NATIVE : EmojiStyle.APPLE}
                     previewConfig={{
                       showPreview: true,
                       defaultCaption: "Choose your emoji..."
                     }}
-                    categories={[
-                      {
-                        name: "Recently Used",
-                        category: "suggested"
-                      },
-                      {
-                        name: "Smileys & People",
-                        category: "smileys_people"
-                      },
-                      {
-                        name: "Animals & Nature",
-                        category: "animals_nature"
-                      },
-                      {
-                        name: "Food & Drink",
-                        category: "food_drink"
-                      },
-                      {
-                        name: "Travel & Places",
-                        category: "travel_places"
-                      },
-                      {
-                        name: "Activities",
-                        category: "activities"
-                      },
-                      {
-                        name: "Objects",
-                        category: "objects"
-                      },
-                      {
-                        name: "Symbols",
-                        category: "symbols"
-                      },
-                      {
-                        name: "Flags",
-                        category: "flags"
-                      }
-                    ]}
+                    categories={emojiCategories}
                   />
                 </div>
                 <div className="absolute w-4 h-4 bg-white dark:bg-dark-800 transform rotate-45 right-5 -bottom-2 border-r border-b border-gray-200 dark:border-dark-700"></div>

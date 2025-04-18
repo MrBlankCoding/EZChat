@@ -3,6 +3,9 @@ import { getAuth } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
 import type { Messaging } from 'firebase/messaging';
 
+// Ensure the browser polyfill is loaded
+import './browserPolyfill';
+
 // Your Firebase configuration
 // Replace with your actual Firebase project configuration
 const firebaseConfig = {
@@ -45,8 +48,13 @@ if (isFCMSupported()) {
   try {
     // Dynamically import to prevent errors in unsupported browsers
     import('firebase/messaging').then(({ getMessaging }) => {
-      messaging = getMessaging(app);
-      console.log('Firebase Cloud Messaging initialized successfully');
+      try {
+        messaging = getMessaging(app);
+        console.log('Firebase Cloud Messaging initialized successfully');
+      } catch (e) {
+        console.debug('Failed to initialize messaging:', e);
+        messaging = null;
+      }
     }).catch(error => {
       console.debug('Firebase Cloud Messaging not available:', error);
       // Silent fallback - no need to show error to users
@@ -58,6 +66,9 @@ if (isFCMSupported()) {
 } else {
   console.debug('Firebase Cloud Messaging not supported in this browser');
 }
+
+// Safe way to get messaging - returns null if not available
+export const getMessagingInstance = () => messaging;
 
 export { auth, storage, messaging };
 export default app; 

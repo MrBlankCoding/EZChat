@@ -12,6 +12,7 @@ import {
   ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 import { generateAvatarUrl } from '../utils/avatarUtils';
+import UserStatusHeader from './UserStatusHeader';
 
 const Sidebar = () => {
   const { user } = useAuthStore();
@@ -54,32 +55,30 @@ const Sidebar = () => {
       </div>
 
       {/* User Profile */}
-      <div className={`p-4 flex ${isOpen ? 'items-center' : 'justify-center'} border-b border-gray-200 dark:border-dark-700`}>
-        <div className="relative">
-          <img
-            className="h-10 w-10 rounded-full object-cover ring-2 ring-primary-200 dark:ring-secondary-700"
-            src={user?.photoURL || (user?.displayName ? generateAvatarUrl(user.displayName, 150) : generateAvatarUrl('User', 150))}
-            alt="User avatar"
-          />
-          <div className={`absolute -bottom-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-white dark:border-dark-800 ${
-            user?.status === 'online'
-              ? 'bg-green-500'
-              : user?.status === 'away'
-              ? 'bg-yellow-500'
-              : 'bg-gray-500'
-          }`}></div>
-          
-          {/* Show notification badge if there are any unread notifications */}
-          {totalUnreadCount > 0 && !isOpen && (
-            <NotificationBadge count={totalUnreadCount} />
+      <div className={`p-4 flex flex-col ${isOpen ? '' : 'items-center'} border-b border-gray-200 dark:border-dark-700`}>
+        <div className={`flex ${isOpen ? 'items-center' : 'justify-center'} mb-2`}>
+          <div className="relative">
+            <img
+              className="h-10 w-10 rounded-full object-cover ring-2 ring-primary-200 dark:ring-secondary-700"
+              src={user?.photoURL || (user?.displayName ? generateAvatarUrl(user.displayName, 150) : generateAvatarUrl('User', 150))}
+              alt="User avatar"
+            />
+            
+            {/* Show notification badge if there are any unread notifications */}
+            {totalUnreadCount > 0 && !isOpen && (
+              <NotificationBadge count={totalUnreadCount} />
+            )}
+          </div>
+          {isOpen && (
+            <div className="ml-3 overflow-hidden animate-fade-in">
+              <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{user?.displayName || 'User'}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user?.email}</p>
+            </div>
           )}
         </div>
-        {isOpen && (
-          <div className="ml-3 overflow-hidden animate-fade-in">
-            <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{user?.displayName || 'User'}</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user?.email}</p>
-          </div>
-        )}
+        
+        {/* Status Dropdown */}
+        {isOpen && <UserStatusHeader className="w-full animate-fade-in" />}
       </div>
 
       {/* Navigation */}

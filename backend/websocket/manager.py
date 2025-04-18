@@ -2,16 +2,14 @@ import json
 import logging
 from typing import Dict, Optional, List, Any, Tuple
 from datetime import datetime
-from fastapi import (
-    APIRouter,
-    WebSocket,
-    WebSocketDisconnect,
-    Query,
-    HTTPException,
-    status,
-)
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPException
 from starlette.websockets import WebSocketState
 from websockets.exceptions import ConnectionClosed
+import time
+import os
+import asyncio
+from functools import lru_cache
+from cachetools import TTLCache, LRUCache
 
 from db.mongodb import get_messages_collection, get_users_collection
 from auth.firebase import FirebaseToken
@@ -24,6 +22,7 @@ from .protocol import (
     TypingMessage,
     TextMessage,
     ReadReceiptMessage,
+    ReadReceiptBatchMessage,
     DeliveryReceiptMessage,
     PresenceMessage,
     ErrorMessage,
@@ -31,18 +30,73 @@ from .protocol import (
     ReplyMessage,
     EditMessage,
     DeleteMessage,
-    TimezoneMessage,
     StatusMessage,
+    PongMessage,
 )
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Set debug mode from env
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 
 # WebSocket router
 websocket_router = APIRouter()
 
 # Rate limiter for messages (100 messages per minute)
 message_rate_limiter = RateLimiter(limit=100, window=60)
+
+# Batch processing for read receipts
+READ_RECEIPT_BATCH_SIZE = 50  # Increased from 5 for better performance
+read_receipt_buffer = {}
+read_receipt_last_log = {}
+
+# Cache for user data to reduce DB queries (cache for 5 minutes)
+USER_CACHE_SIZE = int(os.getenv("USER_CACHE_SIZE", "1000"))
+USER_CACHE_TTL = int(os.getenv("USER_CACHE_TTL", "300"))  # 5 minutes
+user_cache = TTLCache(maxsize=USER_CACHE_SIZE, ttl=USER_CACHE_TTL)
+
+# Cache for message lookup (cache for 1 minute)
+MESSAGE_CACHE_SIZE = int(os.getenv("MESSAGE_CACHE_SIZE", "5000"))
+MESSAGE_CACHE_TTL = int(os.getenv("MESSAGE_CACHE_TTL", "60"))  # 1 minute
+message_cache = TTLCache(maxsize=MESSAGE_CACHE_SIZE, ttl=MESSAGE_CACHE_TTL)
+
+# Add a semaphore to limit concurrent DB operations
+DB_CONCURRENCY_LIMIT = int(os.getenv("DB_CONCURRENCY_LIMIT", "20"))
+db_semaphore = asyncio.Semaphore(DB_CONCURRENCY_LIMIT)
+
+
+# Helper function for conditional logging
+def debug_log(message, force=False):
+    """Only log debug messages if DEBUG mode is enabled or force is True"""
+    if DEBUG or force:
+        logger.debug(message)
+
+
+def should_log_read_receipt(user_id, message_id):
+    """Limit read receipt logs to avoid spamming logs"""
+    current_time = time.time()
+    last_log_time = read_receipt_last_log.get(user_id, 0)
+
+    # Only log one read receipt per user every 10 seconds
+    if current_time - last_log_time > 10:
+        read_receipt_last_log[user_id] = current_time
+        return True
+    return False
+
+
+# Cache frequently used user lookups
+async def get_cached_user(user_id: str) -> Optional[Dict]:
+    """Get user data with caching to reduce DB queries"""
+    if user_id in user_cache:
+        return user_cache[user_id]
+
+    async with db_semaphore:
+        users_collection = get_users_collection()
+        user = await users_collection.find_one({"_id": user_id})
+        if user:
+            user_cache[user_id] = user
+        return user
 
 
 class ConnectionManager:
@@ -51,21 +105,118 @@ class ConnectionManager:
         self.user_statuses: Dict[str, str] = {}
         self.typing_status: Dict[Tuple[str, str], datetime] = {}
         self.user_timezones: Dict[str, str] = {}
+        # Add last heartbeat tracking
+        self.last_heartbeat: Dict[str, float] = {}
+        # Add event for batch processing
+        self.batch_processing_event = asyncio.Event()
+        self.batch_processing_task = None
+
+    async def start_background_tasks(self):
+        """Start background tasks for connection management"""
+        self.batch_processing_task = asyncio.create_task(self.process_read_receipts())
+        # Add health check task
+        asyncio.create_task(self.check_connections_health())
+
+    async def check_connections_health(self):
+        """Periodically check connection health and clean up dead connections"""
+        while True:
+            try:
+                current_time = time.time()
+                stale_connections = []
+
+                for user_id, last_time in self.last_heartbeat.items():
+                    # If no heartbeat for 60 seconds, consider connection stale
+                    if current_time - last_time > 60:
+                        stale_connections.append(user_id)
+
+                for user_id in stale_connections:
+                    logger.warning(
+                        f"Connection for {user_id} appears stale, disconnecting"
+                    )
+                    await self.disconnect(user_id)
+
+                # Run every 30 seconds
+                await asyncio.sleep(30)
+            except Exception as e:
+                logger.error(f"Error in connection health check: {e}")
+                await asyncio.sleep(30)
+
+    async def process_read_receipts(self):
+        """Background task to process read receipts in batches"""
+        while True:
+            try:
+                # Wait for the event to be set or 5 seconds, whichever comes first
+                try:
+                    await asyncio.wait_for(self.batch_processing_event.wait(), 5)
+                except asyncio.TimeoutError:
+                    pass
+
+                # Clear the event for next iteration
+                self.batch_processing_event.clear()
+
+                # Process any pending read receipts
+                pending_receipts = {}
+                for user_id, receipts in read_receipt_buffer.items():
+                    if receipts:
+                        pending_receipts[user_id] = receipts.copy()
+                        read_receipt_buffer[user_id] = []
+
+                # Process pending receipts
+                for user_id, receipts in pending_receipts.items():
+                    if receipts:
+                        try:
+                            # Group receipts by recipient for efficiency
+                            by_recipient = {}
+                            for receipt in receipts:
+                                recipient = receipt.get("to_user")
+                                if recipient not in by_recipient:
+                                    by_recipient[recipient] = []
+                                by_recipient[recipient].append(receipt)
+
+                            # Send batched receipts to each recipient
+                            for recipient, batch in by_recipient.items():
+                                # Create a batch message for each recipient
+                                message_ids = [r.get("message_id") for r in batch]
+                                batch_receipt = ReadReceiptBatchMessage(
+                                    from_user=user_id,
+                                    to_user=recipient,
+                                    message_ids=message_ids,
+                                    contact_id=batch[0].get("contact_id"),
+                                    timestamp=datetime.utcnow().isoformat(),
+                                )
+                                await self.send_personal_message(
+                                    batch_receipt, recipient
+                                )
+                        except Exception as e:
+                            logger.error(f"Error processing read receipt batch: {e}")
+
+                # Sleep briefly to avoid CPU spinning
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Error in read receipt processor: {e}")
+                await asyncio.sleep(5)
 
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
         self.active_connections[user_id] = websocket
         self.user_statuses[user_id] = "online"
-        logger.info(
+        self.last_heartbeat[user_id] = time.time()
+        debug_log(
             f"User {user_id} connected. Total active connections: {len(self.active_connections)}"
         )
         await self.broadcast_presence(user_id, "online")
+
+        # Ensure background tasks are running
+        if self.batch_processing_task is None or self.batch_processing_task.done():
+            await self.start_background_tasks()
 
     async def disconnect(self, user_id: str):
         if user_id in self.active_connections:
             del self.active_connections[user_id]
             self.user_statuses[user_id] = "offline"
-            logger.info(
+            if user_id in self.last_heartbeat:
+                del self.last_heartbeat[user_id]
+            debug_log(
                 f"User {user_id} disconnected. Remaining connections: {len(self.active_connections)}"
             )
             await self.broadcast_presence(user_id, "offline")
@@ -78,12 +229,34 @@ class ConnectionManager:
             last_seen=datetime.utcnow().isoformat(),
         )
 
+        # Use gather for concurrent broadcasting
+        coroutines = []
         for recipient_id, connection in self.active_connections.items():
             if recipient_id != user_id:
-                try:
-                    await connection.send_text(message.json())
-                except Exception as e:
-                    logger.error(f"Error broadcasting presence to {recipient_id}: {e}")
+                coroutines.append(
+                    self._send_message_to_connection(
+                        connection, message.json(), recipient_id
+                    )
+                )
+
+        if coroutines:
+            await asyncio.gather(*coroutines, return_exceptions=True)
+
+    async def _send_message_to_connection(
+        self, connection: WebSocket, message_text: str, recipient_id: str
+    ):
+        """Helper method to send message to a connection with error handling"""
+        try:
+            if connection.client_state == WebSocketState.CONNECTED:
+                await connection.send_text(message_text)
+                return True
+            else:
+                await self.disconnect(recipient_id)
+                return False
+        except Exception as e:
+            logger.error(f"Error sending message to {recipient_id}: {e}")
+            await self.disconnect(recipient_id)
+            return False
 
     async def send_personal_message(
         self, message: WebSocketMessage, recipient_id: str
@@ -135,16 +308,42 @@ class ConnectionManager:
     def get_user_timezone(self, user_id: str) -> Optional[str]:
         return self.user_timezones.get(user_id)
 
+    def update_heartbeat(self, user_id: str):
+        """Update the last heartbeat time for a user"""
+        self.last_heartbeat[user_id] = time.time()
+
     async def update_user_timezone(self, user_id: str, timezone: str):
+        # Check if the timezone has actually changed
+        current_timezone = self.user_timezones.get(user_id)
+        if current_timezone == timezone:
+            # No change, don't update the database
+            debug_log(f"Timezone unchanged for user {user_id}: {timezone}")
+            return
+
+        # Update in-memory cache
         self.user_timezones[user_id] = timezone
         logger.info(f"Updated timezone for user {user_id}: {timezone}")
 
         try:
-            users_collection = get_users_collection()
-            await users_collection.update_one(
-                {"_id": user_id},
-                {"$set": {"timezone": timezone, "updated_at": datetime.utcnow()}},
-            )
+            async with db_semaphore:
+                users_collection = get_users_collection()
+
+                # Check if it's actually changed in the database too
+                user = await users_collection.find_one(
+                    {"_id": user_id}, {"timezone": 1}
+                )
+
+                if user and user.get("timezone") == timezone:
+                    debug_log(
+                        f"Timezone already up-to-date in database for user {user_id}"
+                    )
+                    return
+
+                # Update the database with the new timezone
+                await users_collection.update_one(
+                    {"_id": user_id},
+                    {"$set": {"timezone": timezone, "updated_at": datetime.utcnow()}},
+                )
         except Exception as e:
             logger.error(f"Error storing timezone in database: {e}")
 
@@ -197,13 +396,74 @@ async def store_message_in_db(message_data: Dict[str, Any]) -> bool:
             )
             return False
 
-        logger.debug(
+        debug_log(
             f"Message {message_data.get('_id')} stored with result: {result.inserted_id}"
         )
         return True
     except Exception as e:
         logger.error(f"Error storing message {message_data.get('_id')}: {e}")
         return False
+
+
+# Add more efficient message storage with batched DB operations
+messages_to_store = []
+last_db_flush = time.time()
+db_flush_lock = asyncio.Lock()
+
+
+async def flush_messages_to_db():
+    """Flush pending messages to database in bulk"""
+    global messages_to_store, last_db_flush
+
+    async with db_flush_lock:
+        if not messages_to_store:
+            return
+
+        messages_to_flush = messages_to_store.copy()
+        messages_to_store = []
+        last_db_flush = time.time()
+
+        try:
+            if messages_to_flush:
+                debug_log(f"Flushing {len(messages_to_flush)} messages to database")
+                messages_collection = get_messages_collection()
+                result = await messages_collection.insert_many(messages_to_flush)
+                debug_log(
+                    f"Bulk insert completed, inserted: {len(result.inserted_ids)}"
+                )
+        except Exception as e:
+            logger.error(f"Error in bulk message insert: {e}")
+            # Add messages back to queue on failure
+            messages_to_store.extend(messages_to_flush)
+
+
+async def schedule_message_storage(message_doc: Dict):
+    """Schedule a message for storage and flush if needed"""
+    global messages_to_store, last_db_flush
+
+    messages_to_store.append(message_doc)
+
+    # Flush if we have enough messages or it's been too long
+    current_time = time.time()
+    should_flush = len(messages_to_store) >= 20 or (  # Flush when we have 20+ messages
+        messages_to_store and current_time - last_db_flush > 2
+    )  # Or after 2 seconds
+
+    if should_flush:
+        # Start the flush operation as a background task
+        asyncio.create_task(flush_messages_to_db())
+
+
+# More efficient message status updates with caching
+@lru_cache(maxsize=100)
+def _get_status_update_query(status: str, update_fields: Optional[Dict] = None):
+    """Generate and cache the update query for common status updates"""
+    if not update_fields:
+        return {"$set": {"status": status}}
+
+    update_data = {"$set": {"status": status}}
+    update_data["$set"].update(update_fields)
+    return update_data
 
 
 async def update_message_status(
@@ -214,33 +474,61 @@ async def update_message_status(
             logger.error("Cannot update message status: Missing message_id")
             return False
 
-        messages_collection = get_messages_collection()
-        update_data = {"$set": {"status": status}}
+        async with db_semaphore:
+            messages_collection = get_messages_collection()
+            update_data = _get_status_update_query(status, update_fields)
 
-        if update_fields:
-            update_data["$set"].update(update_fields)
+            result = await messages_collection.update_one(
+                {"_id": message_id}, update_data
+            )
 
-        result = await messages_collection.update_one({"_id": message_id}, update_data)
+            if result.matched_count == 0:
+                logger.warning(f"Message {message_id} not found for status update")
+                return False
 
-        if result.matched_count == 0:
-            logger.warning(f"Message {message_id} not found for status update")
-            return False
+            debug_log(
+                f"Updated message {message_id} status to {status}, modified: {result.modified_count}"
+            )
 
-        logger.debug(
-            f"Updated message {message_id} status to {status}, modified: {result.modified_count}"
-        )
-        return True
+            # Update cache if we have this message cached
+            if message_id in message_cache:
+                cached_msg = message_cache[message_id]
+                cached_msg["status"] = status
+                if update_fields:
+                    for key, value in update_fields.items():
+                        cached_msg[key] = value
+                message_cache[message_id] = cached_msg
+
+            return True
     except Exception as e:
         logger.error(f"Error updating message {message_id} status: {e}")
         return False
 
 
+# Cache the message lookup to reduce DB queries
+async def get_cached_message(message_id: str) -> Optional[Dict]:
+    """Get message with caching to reduce DB queries"""
+    if message_id in message_cache:
+        return message_cache[message_id]
+
+    async with db_semaphore:
+        messages_collection = get_messages_collection()
+        message = await messages_collection.find_one({"_id": message_id})
+        if message:
+            message_cache[message_id] = message
+        return message
+
+
 async def handle_text_message(
     payload: Dict, from_user: str, to_user: str, websocket: WebSocket
 ):
+    debug_log(f"Handling text message from {from_user} to {to_user}")
+
+    # Get user timezones only once
     sender_timezone = connection_manager.get_user_timezone(from_user)
     recipient_timezone = connection_manager.get_user_timezone(to_user)
 
+    # Parse the message data
     message_obj = TextMessage(
         from_user=from_user,
         to_user=to_user,
@@ -255,6 +543,7 @@ async def handle_text_message(
     # Generate a consistent conversation ID format
     conversation_id = f"{min(from_user, to_user)}_{max(from_user, to_user)}"
 
+    # Prepare the document for storage
     message_doc = {
         "_id": message_obj.message_id,
         "conversation_id": conversation_id,
@@ -272,22 +561,17 @@ async def handle_text_message(
         "recipient_timezone": recipient_timezone,
     }
 
-    if not await store_message_in_db(message_doc):
-        error_message = ErrorMessage(code=500, message="Failed to store message")
-        await websocket.send_text(error_message.json())
-        logger.error(f"Failed to store message: {message_obj.message_id}")
-        return
+    # Schedule the message for storage in batch instead of immediate insert
+    await schedule_message_storage(message_doc)
 
-    # Log successful message storage
-    logger.info(
-        f"Message {message_obj.message_id} stored in database for conversation {conversation_id}"
-    )
-
+    # Attempt to deliver the message
     delivered = await connection_manager.send_personal_message(message_obj, to_user)
     status = MessageStatus.DELIVERED if delivered else MessageStatus.SENT
 
+    # Update the message status in the database
     await update_message_status(message_obj.message_id, status)
 
+    # Send delivery receipt to confirm to sender
     delivery_receipt = DeliveryReceiptMessage(
         from_user=to_user,
         to_user=from_user,
@@ -297,11 +581,62 @@ async def handle_text_message(
     )
     await connection_manager.send_personal_message(delivery_receipt, from_user)
 
+    # Find all related sender devices needing sync in one loop
+    # and all recipient devices in another
+    active_connections = connection_manager.active_connections
+    sender_base_id = from_user.split(":")[0]
+    recipient_base_id = to_user.split(":")[0]
+
+    # Prepare all device messages concurrently
+    coroutines = []
+
+    # Batch sync to other devices
+    for conn_id, conn in active_connections.items():
+        if conn_id == from_user or conn_id == to_user:
+            continue  # Skip primary devices (already handled)
+
+        # Check if this is another device of the sender
+        if conn_id.startswith(sender_base_id):
+            sender_message_obj = TextMessage(
+                from_user=from_user,
+                to_user=to_user,
+                message_id=message_obj.message_id,
+                text=message_obj.text,
+                timestamp=message_obj.timestamp,
+                attachments=message_obj.attachments,
+                reply_to=message_obj.reply_to,
+                status=status,
+            )
+            coroutines.append(
+                connection_manager.send_personal_message(sender_message_obj, conn_id)
+            )
+
+        # Check if this is another device of the recipient
+        elif conn_id.startswith(recipient_base_id):
+            recipient_message_obj = TextMessage(
+                from_user=from_user,
+                to_user=conn_id,
+                message_id=message_obj.message_id,
+                text=message_obj.text,
+                timestamp=message_obj.timestamp,
+                attachments=message_obj.attachments,
+                reply_to=message_obj.reply_to,
+                status=status,
+            )
+            coroutines.append(
+                connection_manager.send_personal_message(recipient_message_obj, conn_id)
+            )
+
+    # Run all device notifications concurrently
+    if coroutines:
+        await asyncio.gather(*coroutines, return_exceptions=True)
+
+    # Send push notification if not delivered via WebSocket
     if not delivered:
         try:
-            users_collection = get_users_collection()
-            recipient = await users_collection.find_one({"_id": to_user})
-            sender = await users_collection.find_one({"_id": from_user})
+            # Get user data from cache if possible
+            recipient = await get_cached_user(to_user)
+            sender = await get_cached_user(from_user)
 
             if recipient and recipient.get("fcm_token"):
                 sender_name = sender.get("display_name") if sender else "Someone"
@@ -314,6 +649,8 @@ async def handle_text_message(
                 )
         except Exception as e:
             logger.error(f"Error sending notification: {e}")
+
+    debug_log(f"Text message handling complete for message {message_obj.message_id}")
 
 
 async def handle_reply_message(
@@ -449,7 +786,31 @@ async def handle_edit_message(
             text=new_text,
         )
 
-        await connection_manager.send_personal_message(edit_obj, to_user)
+        # Send to the message recipient
+        success = await connection_manager.send_personal_message(edit_obj, to_user)
+        logger.info(
+            f"Sent edit notification to {to_user} for message {message_id}, success: {success}"
+        )
+
+        # Broadcast to all other connections that might be showing this conversation
+        # This is a simpler approach that doesn't rely on specific user ID formats
+        for uid, connection in connection_manager.active_connections.items():
+            if uid != from_user and uid != to_user:
+                try:
+                    recipient_edit_obj = EditMessage(
+                        from_user=from_user,
+                        to_user=uid,
+                        message_id=message_id,
+                        text=new_text,
+                    )
+                    await connection_manager.send_personal_message(
+                        recipient_edit_obj, uid
+                    )
+                    logger.info(
+                        f"Broadcasting edit notification to {uid} for message {message_id}"
+                    )
+                except Exception as e:
+                    logger.error(f"Error sending edit notification to {uid}: {e}")
 
     except Exception as e:
         logger.error(f"Error editing message: {e}")
@@ -487,7 +848,29 @@ async def handle_delete_message(
             message_id=message_id,
         )
 
-        await connection_manager.send_personal_message(delete_obj, to_user)
+        # Send to the message recipient
+        success = await connection_manager.send_personal_message(delete_obj, to_user)
+        logger.info(
+            f"Sent delete notification to {to_user} for message {message_id}, success: {success}"
+        )
+
+        # Broadcast to all other connections that might be showing this conversation
+        for uid, connection in connection_manager.active_connections.items():
+            if uid != from_user and uid != to_user:
+                try:
+                    recipient_delete_obj = DeleteMessage(
+                        from_user=from_user,
+                        to_user=uid,
+                        message_id=message_id,
+                    )
+                    await connection_manager.send_personal_message(
+                        recipient_delete_obj, uid
+                    )
+                    logger.info(
+                        f"Broadcasting delete notification to {uid} for message {message_id}"
+                    )
+                except Exception as e:
+                    logger.error(f"Error sending delete notification to {uid}: {e}")
 
     except Exception as e:
         logger.error(f"Error deleting message: {e}")
@@ -496,36 +879,125 @@ async def handle_delete_message(
 
 
 async def handle_read_receipt(payload: Dict, from_user: str, to_user: str):
+    """
+    Queue a single read receipt for batch processing instead of processing immediately
+    """
     message_id = payload.get("messageId")
+    contact_id = payload.get("contactId")  # This is important for the frontend
 
     if message_id:
-        update_fields = {
-            "read_at": datetime.utcnow(),
-        }
+        # Queue for batch processing instead of immediate processing
+        if from_user not in read_receipt_buffer:
+            read_receipt_buffer[from_user] = []
 
-        await update_message_status(message_id, MessageStatus.READ, update_fields)
-
-        read_receipt = ReadReceiptMessage(
-            from_user=from_user,
-            to_user=to_user,
-            message_id=message_id,
-            status=MessageStatus.READ,
-            timestamp=datetime.utcnow().isoformat(),
+        read_receipt_buffer[from_user].append(
+            {"message_id": message_id, "to_user": to_user, "contact_id": contact_id}
         )
 
-        await connection_manager.send_personal_message(read_receipt, to_user)
+        # Trigger batch processing event if enough receipts are queued
+        if len(read_receipt_buffer[from_user]) >= READ_RECEIPT_BATCH_SIZE:
+            connection_manager.batch_processing_event.set()
+
+        # Only log periodically to avoid flooding logs
+        if should_log_read_receipt(from_user, message_id):
+            debug_log(
+                f"Queued read receipt for {message_id} from {from_user} to {to_user}"
+            )
+
+
+async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str):
+    """
+    Process a batch of read receipts efficiently
+    """
+    message_ids = payload.get("messageIds", [])
+    contact_id = payload.get("contactId")
+
+    if not message_ids:
+        return
+
+    if DEBUG:
+        debug_log(
+            f"Processing batch of {len(message_ids)} read receipts from {from_user}"
+        )
+
+    # Process in chunks to avoid overwhelming the database
+    chunk_size = 50  # Process 50 messages at a time
+    total_updated = 0
+
+    for i in range(0, len(message_ids), chunk_size):
+        chunk = message_ids[i : i + chunk_size]
+
+        try:
+            # Update all messages in this chunk
+            update_fields = {
+                "read_at": datetime.utcnow(),
+            }
+
+            async with db_semaphore:
+                messages_collection = get_messages_collection()
+                result = await messages_collection.update_many(
+                    {"_id": {"$in": chunk}},
+                    {"$set": {"status": MessageStatus.READ, **update_fields}},
+                )
+
+                total_updated += result.modified_count
+        except Exception as e:
+            logger.error(f"Error processing read receipt chunk: {e}")
+
+    if DEBUG and total_updated > 0:
+        debug_log(
+            f"Updated {total_updated} of {len(message_ids)} messages to read status"
+        )
+
+    # Create a batch notification for the original sender
+    batch_receipt = ReadReceiptBatchMessage(
+        from_user=from_user,
+        to_user=to_user,
+        message_ids=message_ids,
+        contact_id=contact_id,
+        timestamp=datetime.utcnow().isoformat(),
+    )
+
+    # Send to the original sender
+    await connection_manager.send_personal_message(batch_receipt, to_user)
+
+    # Find client IDs that need to be notified
+    notification_targets = set()
+
+    # Only add clients that share the conversation
+    sender_base_id = from_user.split(":")[0]
+    recipient_base_id = to_user.split(":")[0]
+
+    for uid in connection_manager.active_connections:
+        # Skip the current user and original sender
+        if uid == from_user or uid == to_user:
+            continue
+
+        # Add all related devices (more efficient than checking one by one)
+        if uid.startswith(sender_base_id) or uid.startswith(recipient_base_id):
+            notification_targets.add(uid)
+
+    # Send notifications concurrently
+    if notification_targets:
+        coroutines = [
+            connection_manager.send_personal_message(batch_receipt, uid)
+            for uid in notification_targets
+        ]
+        await asyncio.gather(*coroutines, return_exceptions=True)
 
 
 @websocket_router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
     user_id = None
+    heartbeat_task = None  # Define heartbeat_task at the start to avoid linter error
+
     try:
-        logger.info(f"WebSocket connection attempt with token: {token[:10]}...")
+        debug_log(f"WebSocket connection attempt")
 
         try:
             firebase_token = await verify_token(token)
             user_id = firebase_token.firebase_uid
-            logger.info(f"WebSocket token verified for user: {user_id}")
+            debug_log(f"WebSocket token verified for user: {user_id}")
         except Exception as e:
             logger.error(f"WebSocket token verification failed: {str(e)}")
             await websocket.accept()
@@ -535,6 +1007,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
             return
 
         await connection_manager.connect(websocket, user_id)
+
+        # Start a keepalive task for this connection
+        heartbeat_task = asyncio.create_task(periodic_heartbeat(websocket, user_id))
 
         while True:
             data = await websocket.receive_text()
@@ -548,6 +1023,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                     )
                     await websocket.send_text(error.json())
                     continue
+
+                # Update heartbeat on any message
+                connection_manager.update_heartbeat(user_id)
 
                 message_type = message_data.get("type")
                 from_user = message_data.get("from")
@@ -586,7 +1064,21 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
 
                 elif message_type == WebSocketMessageType.TIMEZONE:
                     timezone = payload.get("timezone")
-                    if timezone:
+                    verify_only = payload.get("verify_only", False)
+
+                    if verify_only:
+                        # This is just a verification request, don't update, just send current timezone
+                        current_tz = connection_manager.get_user_timezone(from_user)
+                        ack = StatusMessage(
+                            from_user="system",
+                            to_user=from_user,
+                            status="ok",
+                            message="Timezone verification",
+                            payload={"timezone": current_tz},
+                        )
+                        await websocket.send_text(ack.json())
+                    elif timezone:
+                        # Normal timezone update
                         await connection_manager.update_user_timezone(
                             from_user, timezone
                         )
@@ -601,11 +1093,21 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                 elif message_type == WebSocketMessageType.READ_RECEIPT:
                     await handle_read_receipt(payload, from_user, to_user)
 
+                elif message_type == WebSocketMessageType.READ_RECEIPT_BATCH:
+                    await handle_read_receipt_batch(payload, from_user, to_user)
+
                 elif message_type == WebSocketMessageType.PRESENCE:
                     status = payload.get("status")
                     if status:
                         connection_manager.user_statuses[from_user] = status
                         await connection_manager.broadcast_presence(from_user, status)
+
+                elif message_type == WebSocketMessageType.PING:
+                    # Respond with pong
+                    timestamp = message_data.get("timestamp", int(time.time() * 1000))
+                    pong = PongMessage(timestamp=timestamp)
+                    await websocket.send_text(json.dumps(pong.dict()))
+                    continue
 
                 else:
                     error = ErrorMessage(
@@ -623,24 +1125,52 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                 await websocket.send_text(error.json())
 
     except WebSocketDisconnect:
-        logger.info(f"WebSocket client disconnected: {user_id}")
+        debug_log(f"WebSocket client disconnected: {user_id}")
         if user_id:
             await connection_manager.disconnect(user_id)
 
     except ConnectionClosed:
-        logger.info(f"WebSocket connection closed: {user_id}")
+        debug_log(f"WebSocket connection closed: {user_id}")
         if user_id:
             await connection_manager.disconnect(user_id)
 
     except HTTPException as http_exc:
         logger.warning(f"WebSocket authentication error: {http_exc.detail}")
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        await websocket.close(code=1008)
 
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         if user_id:
             await connection_manager.disconnect(user_id)
         try:
-            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+            await websocket.close(code=1011)
         except:
             pass
+    finally:
+        # Ensure heartbeat task is cancelled
+        if heartbeat_task and not heartbeat_task.done():
+            heartbeat_task.cancel()
+
+
+async def periodic_heartbeat(websocket: WebSocket, user_id: str):
+    """Periodically send ping messages to keep the connection alive"""
+    try:
+        while True:
+            try:
+                # Only send if connection is still active
+                if user_id in connection_manager.active_connections:
+                    pong = PongMessage(timestamp=int(time.time() * 1000))
+                    await websocket.send_text(json.dumps(pong.dict()))
+                    connection_manager.update_heartbeat(user_id)
+                else:
+                    # Exit the heartbeat loop if connection is gone
+                    break
+
+                # Wait for 20 seconds before next ping
+                await asyncio.sleep(20)
+            except Exception as e:
+                logger.error(f"Error in heartbeat for {user_id}: {e}")
+                break
+    except asyncio.CancelledError:
+        # Task was cancelled, just exit
+        pass

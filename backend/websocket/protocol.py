@@ -14,6 +14,7 @@ class WebSocketMessageType(str, Enum):
     TYPING = "typing"
     STATUS = "status"
     READ_RECEIPT = "read_receipt"
+    READ_RECEIPT_BATCH = "read_receipt_batch"
     DELIVERY_RECEIPT = "delivery_receipt"
     PRESENCE = "presence"
     ERROR = "error"
@@ -22,6 +23,8 @@ class WebSocketMessageType(str, Enum):
     EDIT = "edit"
     DELETE = "delete"
     TIMEZONE = "timezone"
+    PING = "ping"
+    PONG = "pong"
 
 
 class WebSocketMessage(BaseModel):
@@ -262,12 +265,18 @@ class TimezoneMessage(WebSocketMessage):
     """
 
     type: WebSocketMessageType = WebSocketMessageType.TIMEZONE
-    timezone: str
+    timezone: Optional[str] = None
+    verify_only: bool = False
 
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
         # Move payload-related fields under payload
-        d["payload"] = {"timezone": d.pop("timezone")}
+        payload = {}
+        if "timezone" in d:
+            payload["timezone"] = d.pop("timezone")
+        if "verify_only" in d:
+            payload["verify_only"] = d.pop("verify_only")
+        d["payload"] = payload
         return d
 
 
@@ -279,12 +288,64 @@ class StatusMessage(WebSocketMessage):
     type: WebSocketMessageType = WebSocketMessageType.STATUS
     status: str = "ok"
     message: str = ""
+    payload: Optional[Dict[str, Any]] = None
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Create the payload dictionary
+        payload_dict = {"status": d.pop("status"), "message": d.pop("message")}
+
+        # Add custom payload fields if provided
+        custom_payload = d.pop("payload", None)
+        if custom_payload:
+            payload_dict.update(custom_payload)
+
+        d["payload"] = payload_dict
+        return d
+
+
+class PingMessage(BaseModel):
+    """
+    Ping message to check connection status.
+    """
+
+    type: str = "ping"
+    timestamp: int = Field(
+        default_factory=lambda: int(datetime.utcnow().timestamp() * 1000)
+    )
+
+    def dict(self, *args, **kwargs):
+        return {"type": self.type, "timestamp": self.timestamp}
+
+
+class PongMessage(BaseModel):
+    """
+    Pong response to a ping message.
+    """
+
+    type: str = "pong"
+    timestamp: int
+
+    def dict(self, *args, **kwargs):
+        return {"type": self.type, "timestamp": self.timestamp}
+
+
+class ReadReceiptBatchMessage(WebSocketMessage):
+    """
+    Batch of read receipt messages.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.READ_RECEIPT_BATCH
+    message_ids: List[str]
+    contact_id: str
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
         # Move payload-related fields under payload
         d["payload"] = {
-            "status": d.pop("status"),
-            "message": d.pop("message"),
+            "messageIds": d.pop("message_ids"),
+            "contactId": d.pop("contact_id"),
+            "timestamp": d.pop("timestamp"),
         }
         return d

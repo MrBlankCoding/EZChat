@@ -3,6 +3,8 @@ import { persist } from 'zustand/middleware';
 import apiClient from '../services/apiClient';
 import websocketService from '../services/websocketService';
 import { useAuthStore } from './authStore';
+import { useContactsStore } from './contactsStore';
+import { PresenceState } from '../services/presenceManager';
 
 export interface Reaction {
   userId: string;
@@ -32,6 +34,8 @@ export interface Conversation {
   lastReadMessageId?: string;
   isPinned?: boolean;
   isUnread?: boolean;
+  _lastUpdated?: number;
+  contactStatus?: PresenceState;
 }
 
 interface ChatState {
@@ -48,7 +52,7 @@ interface ChatState {
   markMessagesAsRead: (contactId: string) => Promise<void>;
   setTypingIndicator: (contactId: string, isTyping: boolean) => void;
   updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read') => void;
-  updateContactStatus: (contactId: string, status: 'online' | 'offline' | 'away') => void;
+  updateContactStatus: (contactId: string, status: PresenceState) => void;
   clearError: () => void;
   
   pinConversation: (contactId: string, isPinned: boolean) => Promise<void>;
@@ -270,28 +274,75 @@ const useChatStore = create<ChatState>()(
       },
       
       updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read') => {
+        console.log(`[ChatStore] Updating message ${messageId} status to ${status} for contact ${contactId}`);
+        
         const { conversations } = get();
         const conversation = conversations[contactId];
         
-        if (!conversation) return;
+        if (!conversation) {
+          console.warn(`[ChatStore] No conversation found for contact ${contactId}`);
+          return;
+        }
         
-        const updatedMessages = conversation.messages.map(message => 
-          message.id === messageId ? { ...message, status } : message
-        );
+        let foundMessage = false;
+        const updatedMessages = conversation.messages.map(message => {
+          if (message.id === messageId) {
+            foundMessage = true;
+            console.log(`[ChatStore] Found message to update: ${messageId}, old status: ${message.status}, new status: ${status}`);
+            // Only update if status is different or upgrading (sent -> delivered -> read)
+            if (message.status !== status) {
+              return { ...message, status };
+            }
+            // Special case - force update even if status is the same to ensure UI refreshes
+            else if (status === 'read') {
+              // Clone the object to ensure it's seen as a new reference
+              return JSON.parse(JSON.stringify({ ...message, status }));
+            }
+          }
+          return message;
+        });
         
+        if (!foundMessage) {
+          console.warn(`[ChatStore] Message ${messageId} not found in conversation ${contactId}`);
+        }
+        
+        // Always update the state even if no messages were actually changed
+        // This ensures subscribers are notified
         set({
           conversations: {
             ...conversations,
             [contactId]: {
               ...conversation,
-              messages: updatedMessages
+              messages: updatedMessages,
+              // Force an update timestamp to ensure the state is seen as changed
+              _lastUpdated: Date.now()
             }
           }
         });
       },
       
-      updateContactStatus: (contactId: string, status: 'online' | 'offline' | 'away') => {
+      updateContactStatus: (contactId: string, status: PresenceState) => {
         console.log(`[Chat] Contact ${contactId} status updated to ${status}`);
+        
+        // Update contact status in the store
+        const { conversations } = get();
+        const conversation = conversations[contactId];
+        
+        if (conversation) {
+          set({
+            conversations: {
+              ...conversations,
+              [contactId]: {
+                ...conversation,
+                contactStatus: status,
+                _lastUpdated: Date.now() // Force update for subscribers
+              }
+            }
+          });
+        }
+        
+        // Update in contacts store
+        useContactsStore.getState().updateContactPresence(contactId, status);
       },
       
       clearError: () => set({ error: null }),
@@ -558,13 +609,21 @@ const useChatStore = create<ChatState>()(
       },
       
       updateEditedMessage: (messageId: string, contactId: string, text: string, editedAt: string) => {
+        console.log(`[ChatStore] Updating edited message ${messageId} for contact ${contactId}`);
+        
         const { conversations } = get();
         const conversation = conversations[contactId];
         
-        if (!conversation) return;
+        if (!conversation) {
+          console.warn(`[ChatStore] No conversation found for contact ${contactId}`);
+          return;
+        }
         
+        let foundMessage = false;
         const updatedMessages = conversation.messages.map(message => {
           if (message.id === messageId) {
+            foundMessage = true;
+            console.log(`[ChatStore] Found message to edit: ${messageId}`);
             return {
               ...message,
               text,
@@ -575,12 +634,17 @@ const useChatStore = create<ChatState>()(
           return message;
         });
         
+        if (!foundMessage) {
+          console.warn(`[ChatStore] Message ${messageId} not found in conversation ${contactId}`);
+        }
+        
         set({
           conversations: {
             ...conversations,
             [contactId]: {
               ...conversation,
-              messages: updatedMessages
+              messages: updatedMessages,
+              _lastUpdated: Date.now()
             }
           }
         });
@@ -616,7 +680,8 @@ const useChatStore = create<ChatState>()(
               ...conversations,
               [contactId]: {
                 ...conversation,
-                messages: updatedMessages
+                messages: updatedMessages,
+                _lastUpdated: Date.now()
               }
             }
           });
@@ -629,13 +694,21 @@ const useChatStore = create<ChatState>()(
       },
       
       updateDeletedMessage: (messageId: string, contactId: string) => {
+        console.log(`[ChatStore] Updating deleted message ${messageId} for contact ${contactId}`);
+        
         const { conversations } = get();
         const conversation = conversations[contactId];
         
-        if (!conversation) return;
+        if (!conversation) {
+          console.warn(`[ChatStore] No conversation found for contact ${contactId}`);
+          return;
+        }
         
+        let foundMessage = false;
         const updatedMessages = conversation.messages.map(message => {
           if (message.id === messageId) {
+            foundMessage = true;
+            console.log(`[ChatStore] Found message to mark as deleted: ${messageId}`);
             return {
               ...message,
               text: 'This message was deleted',
@@ -647,12 +720,17 @@ const useChatStore = create<ChatState>()(
           return message;
         });
         
+        if (!foundMessage) {
+          console.warn(`[ChatStore] Message ${messageId} not found in conversation ${contactId}`);
+        }
+        
         set({
           conversations: {
             ...conversations,
             [contactId]: {
               ...conversation,
-              messages: updatedMessages
+              messages: updatedMessages,
+              _lastUpdated: Date.now()
             }
           }
         });

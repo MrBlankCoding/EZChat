@@ -12,6 +12,7 @@ import { BellIcon, BellSlashIcon } from '@heroicons/react/24/outline';
 import ThemeToggle from '../components/ThemeToggle';
 import { useThemeStore } from '../stores/themeStore';
 import { generateAvatarUrl } from '../utils/avatarUtils';
+import PresenceSettings from '../components/PresenceSettings';
 
 const SettingsPage = () => {
   const { user, setUser, logout } = useAuthStore();
@@ -324,66 +325,63 @@ const SettingsPage = () => {
             </div>
           </div>
           
-          {/* Notifications Section */}
-          <div className="mt-10 md:grid md:grid-cols-3 md:gap-6">
-            <div className="md:col-span-1">
-              <div className="px-4 sm:px-0">
-                <h3 className="text-lg font-medium leading-6 text-gray-900 dark:text-white">Notifications</h3>
-                <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
-                  Manage how you receive notifications.
-                </p>
-              </div>
-            </div>
-            <div className="mt-5 md:mt-0 md:col-span-2">
-              <div className="shadow sm:rounded-md sm:overflow-hidden">
-                <div className="px-4 py-5 bg-white dark:bg-dark-800 space-y-6 sm:p-6">
+          {/* Presence Settings */}
+          <PresenceSettings className="mt-6 shadow sm:rounded-md sm:overflow-hidden" />
+          
+          {/* Notification Settings */}
+          <div className="mt-6 shadow sm:rounded-md sm:overflow-hidden">
+            <div className="px-4 py-5 bg-white dark:bg-dark-800 space-y-6 sm:p-6">
+              <div>
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white">Notifications</h3>
+                
+                {/* Notification Permission Status */}
+                <div className="mt-4 flex items-center justify-between">
                   <div>
-                    <h4 className="text-sm font-medium text-gray-900 dark:text-white">Push Notifications</h4>
-                    <div className="mt-2 flex items-center justify-between">
-                      <p className="text-sm text-gray-500 dark:text-gray-400">
-                        Receive notifications when you get new messages and are not actively using the app.
-                      </p>
-                      
-                      <div>
-                        {notificationStatus === 'granted' ? (
-                          <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
-                            <BellIcon className="h-4 w-4 mr-1" />
-                            Enabled
-                          </span>
-                        ) : notificationStatus === 'denied' ? (
-                          <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800">
-                            <BellSlashIcon className="h-4 w-4 mr-1" />
-                            Blocked
-                          </span>
-                        ) : (
-                          <button 
-                            onClick={requestPermission}
-                            className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800 hover:bg-blue-200"
-                          >
-                            <BellIcon className="h-4 w-4 mr-1" />
-                            Enable
-                          </button>
-                        )}
+                    <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Notification Status</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                      {notificationStatus === 'granted' 
+                        ? 'Notifications are enabled'
+                        : notificationStatus === 'denied'
+                          ? 'Notifications are blocked. Please update browser settings to enable.'
+                          : 'Notifications are not enabled yet.'}
+                    </p>
+                  </div>
+                  <div>
+                    {notificationStatus === 'granted' ? (
+                      <div className="flex items-center text-green-600 dark:text-green-500">
+                        <BellIcon className="h-6 w-6 mr-1" />
+                        <span className="text-sm">Enabled</span>
                       </div>
-                    </div>
-                    
-                    {/* Test Notification Button */}
-                    {notificationStatus === 'granted' && (
-                      <button
-                        type="button"
-                        onClick={sendTestNotification}
-                        className="mt-4 inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-                      >
-                        Send Test Notification
-                      </button>
-                    )}
-                    
-                    {notificationStatus === 'denied' && (
-                      <div className="mt-2 text-sm text-red-500">
-                        You've blocked notifications. Please update your browser settings to enable them.
+                    ) : (
+                      <div className="flex items-center text-red-600 dark:text-red-500">
+                        <BellSlashIcon className="h-6 w-6 mr-1" />
+                        <span className="text-sm">Disabled</span>
                       </div>
                     )}
                   </div>
+                </div>
+                
+                {/* Notification Action Buttons */}
+                <div className="mt-4 space-x-2">
+                  {notificationStatus !== 'granted' && (
+                    <button
+                      type="button"
+                      onClick={requestPermission}
+                      className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                    >
+                      Enable Notifications
+                    </button>
+                  )}
+                  
+                  {notificationStatus === 'granted' && (
+                    <button
+                      type="button"
+                      onClick={sendTestNotification}
+                      className="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-dark-700 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-dark-700 hover:bg-gray-50 dark:hover:bg-dark-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                    >
+                      Send Test Notification
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

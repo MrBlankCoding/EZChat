@@ -1,6 +1,7 @@
 import { useAuthStore } from '../stores/authStore';
 import apiClient from './apiClient';
-import app, { messaging } from './firebaseConfig';
+import app, { messaging, getMessagingInstance } from './firebaseConfig';
+import './browserPolyfill'; // Ensure browser polyfill is loaded
 
 // Define a type for the notification payload
 export interface NotificationPayload {
@@ -36,31 +37,39 @@ class NotificationService {
       return false;
     }
     
-    // If messaging is null, FCM is not supported or failed to initialize
-    if (!messaging) {
-      console.debug('Firebase Cloud Messaging is not available');
-      return false;
-    }
-    
     try {
-      // Check if the browser supports FCM through dynamic import to prevent errors
-      const fcmModule = await import('firebase/messaging').catch(() => null);
-      if (!fcmModule) {
-        console.debug('Firebase Cloud Messaging module could not be loaded');
+      // Safely get messaging instance
+      const messagingInstance = getMessagingInstance();
+      
+      // If messaging is null, FCM is not supported or failed to initialize
+      if (!messagingInstance) {
+        console.debug('Firebase Cloud Messaging is not available');
         return false;
       }
       
-      const { isSupported } = fcmModule;
-      this.fcmSupported = await isSupported().catch(() => false);
-      
-      if (!this.fcmSupported) {
-        console.debug('Firebase Cloud Messaging is not supported in this browser');
-        return false;
-      }
+      try {
+        // Check if the browser supports FCM through dynamic import to prevent errors
+        const fcmModule = await import('firebase/messaging').catch(() => null);
+        if (!fcmModule) {
+          console.debug('Firebase Cloud Messaging module could not be loaded');
+          return false;
+        }
+        
+        const { isSupported } = fcmModule;
+        this.fcmSupported = await isSupported().catch(() => false);
+        
+        if (!this.fcmSupported) {
+          console.debug('Firebase Cloud Messaging is not supported in this browser');
+          return false;
+        }
 
-      this.isInitialized = true;
-      console.debug('Firebase Cloud Messaging initialized successfully');
-      return true;
+        this.isInitialized = true;
+        console.debug('Firebase Cloud Messaging initialized successfully');
+        return true;
+      } catch (error) {
+        console.debug('Error checking FCM support:', error);
+        return false;
+      }
     } catch (error) {
       console.debug('Error initializing Firebase Cloud Messaging:', error);
       return false;
@@ -89,7 +98,10 @@ class NotificationService {
       return null;
     }
 
-    if (!this.fcmSupported || !messaging) {
+    // Safely get messaging instance
+    const messagingInstance = getMessagingInstance();
+    
+    if (!this.fcmSupported || !messagingInstance) {
       return null;
     }
 
@@ -98,7 +110,7 @@ class NotificationService {
       const { getToken } = await import('firebase/messaging');
       
       // Get the FCM token
-      const currentToken = await getToken(messaging, {
+      const currentToken = await getToken(messagingInstance, {
         vapidKey: this.vapidKey,
         serviceWorkerRegistration: await this.getServiceWorkerRegistration()
       });
@@ -155,7 +167,10 @@ class NotificationService {
       return () => {}; // Return no-op unsubscribe function
     }
 
-    if (!this.fcmSupported || !messaging) {
+    // Safely get messaging instance
+    const messagingInstance = getMessagingInstance();
+    
+    if (!this.fcmSupported || !messagingInstance) {
       return () => {}; // Return no-op unsubscribe function
     }
 
@@ -163,7 +178,7 @@ class NotificationService {
       // Dynamically import to prevent errors
       const { onMessage: fcmOnMessage } = await import('firebase/messaging');
       
-      return fcmOnMessage(messaging, (payload) => {
+      return fcmOnMessage(messagingInstance, (payload) => {
         console.debug('Message received in foreground:', payload);
         
         // Extract notification data from the payload

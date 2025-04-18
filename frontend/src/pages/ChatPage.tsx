@@ -80,20 +80,7 @@ const ChatPage = () => {
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-50 dark:bg-dark-950 transition-colors duration-200">
       {/* WebSocket status indicator */}
-      {wsStatus.state !== 'connected' && (
-        <div className="bg-yellow-100 dark:bg-yellow-900 p-2 text-center text-sm">
-          <span className="font-medium">WebSocket disconnected!</span> Messages won't be delivered in real-time. 
-          <button 
-            onClick={() => {
-              websocketService.connect();
-              setTimeout(checkWsConnection, 1000);
-            }}
-            className="ml-2 underline"
-          >
-            Try reconnect
-          </button>
-        </div>
-      )}
+      {/* WebSocket disconnection message removed */}
       
       <div className="flex-1 flex overflow-hidden">
         <Sidebar />

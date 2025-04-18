@@ -3,26 +3,23 @@ import { useNavigate } from 'react-router-dom';
 import { useContactsStore } from '../stores/contactsStore';
 import { useChatStore } from '../stores/chatStore';
 import AddContact from './AddContact';
+import StatusIndicator from './StatusIndicator';
 import { UserPlusIcon, MagnifyingGlassIcon, XMarkIcon, EllipsisHorizontalIcon, TrashIcon, EnvelopeIcon, MapPinIcon } from '@heroicons/react/24/outline';
 import { MapPinIcon as MapPinIconSolid } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
 import { generateAvatarUrl } from '../utils/avatarUtils';
+import { useAuthStore } from '../stores/authStore';
 
 const ContactList = () => {
   const navigate = useNavigate();
   const { contacts } = useContactsStore();
-  const { 
-    activeConversationId, 
-    setActiveConversation, 
-    conversations,
-    pinConversation,
-    markConversationAsUnread,
-    deleteConversation
-  } = useChatStore();
+  const { conversations, activeConversationId, pinConversation, markConversationAsUnread, deleteConversation, setActiveConversation } = useChatStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddContact, setShowAddContact] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
+  const { user } = useAuthStore();
+  const { fetchContacts } = useContactsStore();
 
   // Filter contacts by search term
   const filteredContacts = contacts.filter((contact) => {
@@ -181,15 +178,12 @@ const ContactList = () => {
                         src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
                         alt={contact.contact_display_name}
                       />
-                      <div
-                        className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white dark:border-dark-900 ${
-                          contact.contact_status === 'online'
-                            ? 'bg-green-500'
-                            : contact.contact_status === 'away'
-                            ? 'bg-yellow-500'
-                            : 'bg-gray-500'
-                        }`}
-                      ></div>
+                      <div className="absolute bottom-0 right-0">
+                        <StatusIndicator
+                          status={conversations[contactId]?.contactStatus || contact.contact_status} 
+                          size="md"
+                        />
+                      </div>
                     </div>
                     <div className="ml-3 flex-1 min-w-0">
                       <div className="flex items-center justify-between">
@@ -208,11 +202,12 @@ const ContactList = () => {
                         )}
                       </div>
                       <p className={`text-xs truncate ${isActive ? 'text-primary-500 dark:text-secondary-500' : 'text-gray-500 dark:text-gray-400'}`}>
-                        {contact.contact_status === 'online'
-                          ? 'Online'
-                          : contact.contact_status === 'away'
-                          ? 'Away'
-                          : 'Offline'}
+                        <StatusIndicator
+                          status={conversations[contactId]?.contactStatus || contact.contact_status} 
+                          size="sm"
+                          showLabel
+                          className="inline-flex"
+                        />
                       </p>
                     </div>
                     

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import apiClient from '../services/apiClient';
+import { PresenceState } from '../services/presenceManager';
 
 // Contact types
 export enum ContactStatus {
@@ -19,7 +20,7 @@ export interface Contact {
   contact_email: string;
   contact_display_name: string;
   contact_avatar_url?: string;
-  contact_status: string;
+  contact_status: string | PresenceState;
 }
 
 // Store state interface
@@ -37,6 +38,7 @@ interface ContactsState {
   blockContact: (contactId: string) => Promise<void>;
   deleteContact: (contactId: string) => Promise<void>;
   clearError: () => void;
+  updateContactPresence: (contactId: string, status: PresenceState) => void;
 }
 
 // Create the contacts store
@@ -193,7 +195,22 @@ const useContactsStore = create<ContactsState>((set, get) => ({
   },
   
   // Clear error
-  clearError: () => set({ error: null })
+  clearError: () => set({ error: null }),
+  
+  // Update contact presence status (online/offline)
+  updateContactPresence: (contactId: string, status: PresenceState) => {
+    const { contacts } = get();
+    
+    if (!contacts || !contacts.length) return;
+    
+    const updatedContacts = contacts.map(contact => 
+      contact.contact_id === contactId
+        ? { ...contact, contact_status: status }
+        : contact
+    );
+    
+    set({ contacts: updatedContacts });
+  }
 }));
 
 export { useContactsStore }; 

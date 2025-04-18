@@ -1,3 +1,6 @@
+// Import browser polyfill first to ensure it's defined before any other imports
+import './services/browserPolyfill';
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';

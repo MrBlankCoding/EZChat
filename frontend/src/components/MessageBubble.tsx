@@ -460,60 +460,61 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
               </div>
             )
           )}
-          
-          <div className={`flex items-center justify-end px-4 pb-2 pt-0.5 text-xs ${getFooterClass()}`}>
-            <span className="font-medium">{formattedTimestamp}</span>
-            
-            {isOwn && (
-              <div className="ml-1.5 flex">
-                {renderMessageStatus()}
-              </div>
-            )}
-          </div>
-          
-          {message.reactions && message.reactions.length > 0 && (
-            <div className={`flex -bottom-4 px-1 rounded-full text-xs absolute ${isOwn ? 'left-1' : 'right-1'}`}>
-              {Object.entries(groupedReactions).map(([emoji, userIds]) => (
-                <div 
-                  key={emoji}
-                  className={getReactionBtnClass(userIds)}
-                  onClick={() => handleReaction(emoji)}
-                >
-                  <span className="mr-1">{emoji}</span>
-                  <span className="font-medium">{userIds.length}</span>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
         
-        {replyMode && (
-          <div className={`mt-3 p-3 rounded-xl bg-white dark:bg-dark-800 shadow-md border ${isOwn ? 'border-primary-100 dark:border-primary-900/30' : 'border-gray-100 dark:border-dark-700'}`}>
-            <textarea
-              ref={replyInputRef}
-              value={replyText}
-              onChange={(e) => setReplyText(e.target.value)}
-              placeholder="Type your reply..."
-              className="w-full p-3 border rounded-lg bg-white dark:bg-dark-700 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-primary-500 dark:focus:ring-secondary-500 focus:border-transparent resize-none shadow-inner"
-              rows={2}
-            />
-            <div className="flex justify-end mt-3 space-x-2">
-              <button
-                onClick={() => setReplyMode(false)}
-                className="px-4 py-1.5 text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-dark-700 rounded-md hover:bg-gray-200 dark:hover:bg-dark-600 transition-colors"
+        {message.reactions && message.reactions.length > 0 && (
+          <div className={`flex -bottom-4 px-1 rounded-full text-xs absolute ${isOwn ? 'left-1' : 'right-1'}`}>
+            {Object.entries(groupedReactions).map(([emoji, userIds]) => (
+              <div 
+                key={emoji}
+                className={getReactionBtnClass(userIds)}
+                onClick={() => handleReaction(emoji)}
               >
-                Cancel
-              </button>
-              <button
-                onClick={handleReplySubmit}
-                className="px-4 py-1.5 text-sm text-white bg-primary-600 dark:bg-secondary-600 rounded-md hover:bg-primary-700 dark:hover:bg-secondary-700 transition-colors shadow-sm"
-              >
-                Reply
-              </button>
-            </div>
+                <span className="mr-1">{emoji}</span>
+                <span className="font-medium">{userIds.length}</span>
+              </div>
+            ))}
           </div>
         )}
       </div>
+      
+      {/* Timestamp moved outside bubble */}
+      <div className={`text-xs mt-1 ${isOwn ? 'text-right' : 'text-left'} opacity-0 group-hover/msg:opacity-100 transition-opacity ${getFooterClass()}`}>
+        <span className="font-medium">{formattedTimestamp}</span>
+        
+        {isOwn && (
+          <span className="ml-1.5 inline-flex">
+            {renderMessageStatus()}
+          </span>
+        )}
+      </div>
+      
+      {replyMode && (
+        <div className={`mt-3 p-3 rounded-xl bg-white dark:bg-dark-800 shadow-md border ${isOwn ? 'border-primary-100 dark:border-primary-900/30' : 'border-gray-100 dark:border-dark-700'}`}>
+          <textarea
+            ref={replyInputRef}
+            value={replyText}
+            onChange={(e) => setReplyText(e.target.value)}
+            placeholder="Type your reply..."
+            className="w-full p-3 border rounded-lg bg-white dark:bg-dark-700 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-primary-500 dark:focus:ring-secondary-500 focus:border-transparent resize-none shadow-inner"
+            rows={2}
+          />
+          <div className="flex justify-end mt-3 space-x-2">
+            <button
+              onClick={() => setReplyMode(false)}
+              className="px-4 py-1.5 text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-dark-700 rounded-md hover:bg-gray-200 dark:hover:bg-dark-600 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleReplySubmit}
+              className="px-4 py-1.5 text-sm text-white bg-primary-600 dark:bg-secondary-600 rounded-md hover:bg-primary-700 dark:hover:bg-secondary-700 transition-colors shadow-sm"
+            >
+              Reply
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
