@@ -65,7 +65,7 @@ interface ChatState {
   editMessage: (messageId: string, contactId: string, text: string) => Promise<boolean>;
   updateEditedMessage: (messageId: string, contactId: string, text: string, editedAt: string) => void;
   deleteMessage: (messageId: string, contactId: string) => Promise<boolean>;
-  updateDeletedMessage: (messageId: string, contactId: string) => void;
+  updateDeletedMessage: (messageId: string, contactId: string, deletedAt?: string) => void;
   sendReply: (contactId: string, text: string, replyToMessageId: string, attachments?: any[]) => Promise<void>;
 }
 
@@ -94,8 +94,7 @@ const useChatStore = create<ChatState>()(
           );
           
           if (unreadMessages.length > 0) {
-            const lastMessage = unreadMessages[unreadMessages.length - 1];
-            websocketService.sendReadReceipt(contactId, lastMessage.id);
+            websocketService.sendReadReceipt(contactId, unreadMessages[unreadMessages.length - 1].id);
           }
         } else {
           set({
@@ -109,14 +108,14 @@ const useChatStore = create<ChatState>()(
       },
       
       fetchMessagesForContact: async (contactId: string) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return;
+        }
+        
         try {
           set({ isLoading: true, error: null });
-          
-          const { user } = useAuthStore.getState();
-          if (!user) {
-            set({ error: 'User not authenticated', isLoading: false });
-            return;
-          }
           
           const response = await apiClient.get(`/chats/${contactId}`);
           const messages = response.data.map((message: any) => ({
@@ -218,9 +217,11 @@ const useChatStore = create<ChatState>()(
           }
         });
         
-        if (activeConversationId === contactId && 
-            message.senderId !== user.id && 
-            document?.visibilityState === 'visible') {
+        const isActive = activeConversationId === contactId;
+        const isVisible = document?.visibilityState === 'visible';
+        const isFromOther = message.senderId !== user.id;
+        
+        if (isActive && isFromOther && isVisible) {
           websocketService.sendReadReceipt(contactId, message.id);
         }
       },
@@ -265,56 +266,36 @@ const useChatStore = create<ChatState>()(
       },
       
       setTypingIndicator: (contactId: string, isTyping: boolean) => {
-        set({
+        set(state => ({
           typingIndicators: {
-            ...get().typingIndicators,
+            ...state.typingIndicators,
             [contactId]: isTyping
           }
-        });
+        }));
       },
       
       updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read') => {
-        console.log(`[ChatStore] Updating message ${messageId} status to ${status} for contact ${contactId}`);
-        
+        const msgId = String(messageId);
         const { conversations } = get();
         const conversation = conversations[contactId];
         
-        if (!conversation) {
-          console.warn(`[ChatStore] No conversation found for contact ${contactId}`);
-          return;
-        }
+        if (!conversation) return;
         
-        let foundMessage = false;
         const updatedMessages = conversation.messages.map(message => {
-          if (message.id === messageId) {
-            foundMessage = true;
-            console.log(`[ChatStore] Found message to update: ${messageId}, old status: ${message.status}, new status: ${status}`);
-            // Only update if status is different or upgrading (sent -> delivered -> read)
-            if (message.status !== status) {
+          if (message.id === msgId) {
+            if (message.status !== status || status === 'read') {
               return { ...message, status };
-            }
-            // Special case - force update even if status is the same to ensure UI refreshes
-            else if (status === 'read') {
-              // Clone the object to ensure it's seen as a new reference
-              return JSON.parse(JSON.stringify({ ...message, status }));
             }
           }
           return message;
         });
         
-        if (!foundMessage) {
-          console.warn(`[ChatStore] Message ${messageId} not found in conversation ${contactId}`);
-        }
-        
-        // Always update the state even if no messages were actually changed
-        // This ensures subscribers are notified
         set({
           conversations: {
             ...conversations,
             [contactId]: {
               ...conversation,
               messages: updatedMessages,
-              // Force an update timestamp to ensure the state is seen as changed
               _lastUpdated: Date.now()
             }
           }
@@ -322,9 +303,6 @@ const useChatStore = create<ChatState>()(
       },
       
       updateContactStatus: (contactId: string, status: PresenceState) => {
-        console.log(`[Chat] Contact ${contactId} status updated to ${status}`);
-        
-        // Update contact status in the store
         const { conversations } = get();
         const conversation = conversations[contactId];
         
@@ -335,13 +313,12 @@ const useChatStore = create<ChatState>()(
               [contactId]: {
                 ...conversation,
                 contactStatus: status,
-                _lastUpdated: Date.now() // Force update for subscribers
+                _lastUpdated: Date.now()
               }
             }
           });
         }
         
-        // Update in contacts store
         useContactsStore.getState().updateContactPresence(contactId, status);
       },
       
@@ -420,7 +397,6 @@ const useChatStore = create<ChatState>()(
           });
           
           await apiClient.delete(`/chats/conversation/${contactId}`);
-          
           set({ isLoading: false });
         } catch (error) {
           set({ 
@@ -521,13 +497,14 @@ const useChatStore = create<ChatState>()(
       },
       
       updateMessageReaction: (messageId: string, senderId: string, contactId: string, reaction: string, action: 'add' | 'remove') => {
+        const msgId = String(messageId);
         const { conversations } = get();
         const conversation = conversations[contactId];
         
         if (!conversation) return;
         
         const updatedMessages = conversation.messages.map(message => {
-          if (message.id === messageId) {
+          if (message.id === msgId) {
             const reactions = message.reactions || [];
             
             if (action === 'add') {
@@ -546,7 +523,7 @@ const useChatStore = create<ChatState>()(
                   ]
                 };
               }
-            } else {
+            } else if (action === 'remove') {
               return {
                 ...message,
                 reactions: reactions.filter(r => !(r.userId === senderId && r.reaction === reaction))
@@ -561,7 +538,8 @@ const useChatStore = create<ChatState>()(
             ...conversations,
             [contactId]: {
               ...conversation,
-              messages: updatedMessages
+              messages: updatedMessages,
+              _lastUpdated: Date.now()
             }
           }
         });
@@ -609,34 +587,23 @@ const useChatStore = create<ChatState>()(
       },
       
       updateEditedMessage: (messageId: string, contactId: string, text: string, editedAt: string) => {
-        console.log(`[ChatStore] Updating edited message ${messageId} for contact ${contactId}`);
-        
+        const msgId = String(messageId);
         const { conversations } = get();
         const conversation = conversations[contactId];
         
-        if (!conversation) {
-          console.warn(`[ChatStore] No conversation found for contact ${contactId}`);
-          return;
-        }
+        if (!conversation) return;
         
-        let foundMessage = false;
         const updatedMessages = conversation.messages.map(message => {
-          if (message.id === messageId) {
-            foundMessage = true;
-            console.log(`[ChatStore] Found message to edit: ${messageId}`);
+          if (message.id === msgId) {
             return {
               ...message,
               text,
               isEdited: true,
-              editedAt
+              editedAt: editedAt || new Date().toISOString()
             };
           }
           return message;
         });
-        
-        if (!foundMessage) {
-          console.warn(`[ChatStore] Message ${messageId} not found in conversation ${contactId}`);
-        }
         
         set({
           conversations: {
@@ -693,36 +660,25 @@ const useChatStore = create<ChatState>()(
         }
       },
       
-      updateDeletedMessage: (messageId: string, contactId: string) => {
-        console.log(`[ChatStore] Updating deleted message ${messageId} for contact ${contactId}`);
-        
+      updateDeletedMessage: (messageId: string, contactId: string, deletedAt?: string) => {
+        const msgId = String(messageId);
         const { conversations } = get();
         const conversation = conversations[contactId];
         
-        if (!conversation) {
-          console.warn(`[ChatStore] No conversation found for contact ${contactId}`);
-          return;
-        }
+        if (!conversation) return;
         
-        let foundMessage = false;
         const updatedMessages = conversation.messages.map(message => {
-          if (message.id === messageId) {
-            foundMessage = true;
-            console.log(`[ChatStore] Found message to mark as deleted: ${messageId}`);
+          if (message.id === msgId) {
             return {
               ...message,
               text: 'This message was deleted',
               isDeleted: true,
-              deletedAt: new Date().toISOString(),
+              deletedAt: deletedAt || new Date().toISOString(),
               attachments: []
             };
           }
           return message;
         });
-        
-        if (!foundMessage) {
-          console.warn(`[ChatStore] Message ${messageId} not found in conversation ${contactId}`);
-        }
         
         set({
           conversations: {
@@ -737,17 +693,15 @@ const useChatStore = create<ChatState>()(
       },
       
       sendReply: async (contactId: string, text: string, replyToMessageId: string, attachments = []) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return;
+        }
+        
         try {
           set({ isLoading: true, error: null });
-          
-          const { user } = useAuthStore.getState();
-          if (!user) {
-            set({ error: 'User not authenticated', isLoading: false });
-            return;
-          }
-          
           websocketService.sendReply(contactId, text, replyToMessageId, attachments);
-          
           set({ isLoading: false });
         } catch (error) {
           set({ 

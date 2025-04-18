@@ -24,26 +24,8 @@ interface WebSocketMessage {
   type: MessageType;
   from?: string;
   to?: string | null;
-  from_user?: string;
-  to_user?: string;
-  message_id?: string;
-  _id?: string;
-  sender_id?: string;
-  recipient_id?: string;
-  text?: string;
-  timestamp?: string;
-  created_at?: string;
-  status?: 'sent' | 'delivered' | 'read';
-  attachments?: any[];
-  is_typing?: boolean;
-  reply_to?: string;
-  is_edited?: boolean;
-  edited_at?: string;
-  is_deleted?: boolean;
-  deleted_at?: string;
-  reactions?: any[];
-  timezone?: string;
   payload: any;
+  [key: string]: any;
 }
 
 class WebSocketService {
@@ -56,50 +38,42 @@ class WebSocketService {
   private reconnectDelay = 2000;
   private errorHandlers: Array<(error: any) => void> = [];
   private eventHandlers: Array<() => void> = [];
+  private messageHandlers: Array<(event: any) => void> = [];
   private connectingPromise: Promise<void> | null = null;
   private lastConnectAttempt = 0;
-  private connectionAttemptDebounceMs = 5000; // Prevent multiple connect calls within 5 seconds
+  private connectionAttemptDebounceMs = 5000;
   private presenceInterval: ReturnType<typeof setTimeout> | null = null;
   
-  // Queue up read receipts to be sent in batches
   private readReceiptQueue: Map<string, Set<string>> = new Map<string, Set<string>>();
   private readReceiptTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly READ_RECEIPT_DELAY = 2000; // 2 seconds delay to batch receipts
+  private readonly READ_RECEIPT_DELAY = 2000;
   
   async connect() {
-    // Debounce connect attempts to prevent multiple simultaneous connections
     const now = Date.now();
     if (now - this.lastConnectAttempt < this.connectionAttemptDebounceMs) {
-      console.log('[WS] Connect attempt debounced, another attempt was made recently');
       return this.connectingPromise;
     }
     
     this.lastConnectAttempt = now;
     
     if (this.socket?.readyState === WebSocket.OPEN) {
-      console.log('[WS] Already connected, skipping connection');
       return Promise.resolve();
     }
     
     if (this.connectionState === 'connecting' && this.connectingPromise) {
-      console.log('[WS] Connection already in progress, returning existing promise');
       return this.connectingPromise;
     }
     
-    // Reset any previous reconnect attempts if this is a fresh connection
     if (this.connectionState === 'disconnected') {
       this.reconnectAttempts = 0;
     }
     
     this.connectionState = 'connecting';
-    console.log('[WS] Initiating connection...');
     
-    // Create a new connection promise
     this.connectingPromise = new Promise<void>(async (resolve, reject) => {
       try {
         const { user } = useAuthStore.getState();
         if (!user) {
-          console.error('[WS] Cannot connect: User not authenticated');
           this.connectionState = 'disconnected';
           this.connectingPromise = null;
           reject(new Error('User not authenticated'));
@@ -108,62 +82,35 @@ class WebSocketService {
 
         const auth = (await import('./firebaseConfig')).auth;
         
-        // Try to refresh the token to ensure it's valid
         try {
-          await auth.currentUser?.getIdToken(true); // Force refresh token
+          await auth.currentUser?.getIdToken(true);
         } catch (refreshError) {
-          console.warn('[WS] Token refresh failed:', refreshError);
-          // Continue with the existing token
+          // Continue with existing token
         }
         
         const token = await auth.currentUser?.getIdToken();
         
         if (!token) {
-          console.error('[WS] Cannot connect: No authentication token available');
           this.connectionState = 'disconnected';
           this.connectingPromise = null;
           reject(new Error('No authentication token available'));
           return;
         }
         
-        // Log connection details to help debugging
-        console.log('[WS] Connecting with user:', user.id);
-        
-        // Extract WebSocket URL from environment or use fallback
         const baseWsUrl = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/ws';
-        
-        // Sanitize the WebSocket URL to ensure it has the correct format
         const wsUrlBase = baseWsUrl.trim();
         const wsUrl = `${wsUrlBase}${wsUrlBase.includes('?') ? '&' : '?'}token=${token}`;
         
-        console.log('[WS] Using WebSocket URL:', wsUrl.replace(/token=.*$/, 'token=***'));
-        
-        // Close any existing connection properly
         if (this.socket) {
-          try {
-            this.socket.onclose = null; // Prevent reconnect trigger on intentional close
-            this.socket.close();
-          } catch (err) {
-            console.warn('[WS] Error closing existing socket:', err);
-          }
+          this.socket.onclose = null;
+          this.socket.close();
           this.socket = null;
         }
         
-        // Create and configure new WebSocket
-        try {
-          this.socket = new WebSocket(wsUrl);
-        } catch (wsError) {
-          console.error('[WS] Error creating WebSocket connection:', wsError);
-          this.connectionState = 'disconnected';
-          this.connectingPromise = null;
-          reject(new Error(`Failed to create WebSocket connection: ${wsError}`));
-          return;
-        }
+        this.socket = new WebSocket(wsUrl);
         
-        // Set a connection timeout
         const connectionTimeout = setTimeout(() => {
           if (this.connectionState === 'connecting') {
-            console.error('[WS] Connection timeout');
             if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
               this.socket.close();
               this.connectionState = 'disconnected';
@@ -172,16 +119,19 @@ class WebSocketService {
               reject(new Error('Connection timeout'));
             }
           }
-        }, 10000); // 10 second timeout
+        }, 10000);
         
-        // Set up event handlers
-        this.socket.onopen = (event) => {
+        this.socket.onopen = () => {
           clearTimeout(connectionTimeout);
           this.handleOpen();
           resolve();
         };
         
-        this.socket.onmessage = this.handleMessage.bind(this);
+        this.socket.onmessage = (event) => {
+          this.handleMessage(event).catch(error => {
+            this.notifyErrorHandlers(`Message handling error: ${error}`);
+          });
+        };
         
         this.socket.onclose = (event) => {
           clearTimeout(connectionTimeout);
@@ -199,7 +149,6 @@ class WebSocketService {
           }
         };
       } catch (error) {
-        console.error('[WS] Error connecting to WebSocket:', error);
         this.connectionState = 'disconnected';
         this.connectingPromise = null;
         this.handleClose({ code: 1006, reason: `Connection setup failed: ${error}`, wasClean: false } as CloseEvent);
@@ -213,24 +162,14 @@ class WebSocketService {
   }
   
   disconnect() {
-    console.log('[WS] Disconnecting WebSocket...');
-    
-    // Set connection state to disconnected first before closing the socket
-    // This prevents attempts to send messages during socket closure
     this.connectionState = 'disconnected';
     
     if (this.socket) {
-      try {
-        // Prevent reconnect on intentional close
-        this.socket.onclose = null;
-        this.socket.onerror = null;
-        
-        // Only attempt to close if not already closed
-        if (this.socket.readyState !== WebSocket.CLOSED) {
-          this.socket.close();
-        }
-      } catch (e) {
-        console.warn('[WS] Error during disconnect:', e);
+      this.socket.onclose = null;
+      this.socket.onerror = null;
+      
+      if (this.socket.readyState !== WebSocket.CLOSED) {
+        this.socket.close();
       }
       this.socket = null;
     }
@@ -245,12 +184,16 @@ class WebSocketService {
       this.pingInterval = null;
     }
     
+    if (this.presenceInterval) {
+      clearInterval(this.presenceInterval);
+      this.presenceInterval = null;
+    }
+    
     this.reconnectAttempts = 0;
     this.connectingPromise = null;
   }
   
   private handleOpen() {
-    console.log('[WS] Connection ESTABLISHED successfully');
     this.connectionState = 'connected';
     this.reconnectAttempts = 0;
     
@@ -259,26 +202,18 @@ class WebSocketService {
     }
     
     this.pingInterval = setInterval(() => this.sendPing(), 30000);
-    
-    // Start presence updates
     this.setupPresenceUpdates();
   }
 
   private parseMessage(data: string): WebSocketMessage | null {
     try {
-      // First check if it's a plain string message
       if (typeof data === 'string' && (data === 'ping' || data === 'pong')) {
         return null;
       }
       
-      // Handle potential non-JSON messages 
       try {
         return JSON.parse(data);
       } catch (parseError) {
-        console.error('Error parsing WebSocket message JSON:', parseError);
-        console.log('Raw message data:', data);
-        
-        // If it's not valid JSON but looks like a string message, create a structured error message
         if (typeof data === 'string') {
           return {
             type: MessageType.ERROR,
@@ -291,14 +226,13 @@ class WebSocketService {
         return null;
       }
     } catch (error) {
-      console.error('Unexpected error handling message data:', error);
       this.notifyErrorHandlers(`Message handling error: ${error}`);
       return null;
     }
   }
 
   private transformMessage(data: WebSocketMessage) {
-    const message = {
+    return {
       id: data.payload?.id || data.payload?._id || data.payload?.message_id || 
           data.message_id || data._id || `msg-${Date.now()}`,
       senderId: data.payload?.senderId || data.payload?.sender_id || 
@@ -316,52 +250,65 @@ class WebSocketService {
       reactions: data.payload?.reactions || [],
       replyTo: data.payload?.reply_to || data.reply_to,
       isEdited: data.payload?.is_edited || data.is_edited || false,
-      editedAt: data.payload?.edited_at || data.edited_at,
+      editedAt: data.payload?.editedAt || data.payload?.edited_at || data.edited_at,
       isDeleted: data.payload?.is_deleted || data.is_deleted || false,
-      deletedAt: data.payload?.deleted_at || data.deleted_at
+      deletedAt: data.payload?.deletedAt || data.payload?.deleted_at || data.deleted_at
     };
-
-    return message;
   }
   
-  private handleMessage(event: MessageEvent) {
+  private async handleMessage(event: MessageEvent) {
     try {
       if (event.data === 'pong' || event.data === 'ping') {
-        // Ignore ping/pong heartbeat messages
         return;
       }
       
       const data = this.parseMessage(event.data);
       if (!data) {
-        return; // Already logged in parseMessage
+        return;
       }
       
       if (!data.type) {
-        console.warn('Received malformed WebSocket message:', event.data);
         this.notifyErrorHandlers('Malformed message received');
         return;
       }
       
-      console.log(`[WS] Received message of type: ${data.type}`, 
-        data.type === MessageType.READ_RECEIPT || 
-        data.type === MessageType.EDIT || 
-        data.type === MessageType.DELETE ? data : '');
+      this.notifyMessageHandlers(data);
       
       const chatStore = useChatStore.getState();
       const { user } = useAuthStore.getState();
+      
+      const ensureConversationLoaded = async (contactId: string) => {
+        const conversations = chatStore.conversations;
+        if (!conversations[contactId]) {
+          try {
+            await chatStore.fetchMessagesForContact(contactId);
+          } catch (error) {
+            // Failed to load conversation
+          }
+        }
+      };
       
       switch (data.type) {
         case MessageType.MESSAGE:
           const message = this.transformMessage(data);
           
+          if (user && message.senderId !== user.id) {
+            await ensureConversationLoaded(message.senderId);
+          } else if (user) {
+            await ensureConversationLoaded(message.receiverId);
+          }
+          
           if (message.senderId !== 'unknown' && message.receiverId !== 'unknown') {
-            chatStore.addMessage(message);
+            const contactId = user?.id === message.senderId ? message.receiverId : message.senderId;
+            const conversation = chatStore.conversations[contactId];
             
-            // Only send read receipts if the message is from someone else (not from the current user)
-            if (user && user.id !== message.senderId) {
-              // Instead of sending read receipts for each message individually,
-              // queue up the sender and only send a batch receipt
-              this.queueReadReceipt(message.senderId, message.id);
+            const isDuplicate = conversation?.messages.some(msg => msg.id === message.id);
+            if (!isDuplicate) {
+              chatStore.addMessage(message);
+              
+              if (user && user.id !== message.senderId) {
+                this.queueReadReceipt(message.senderId, message.id);
+              }
             }
           }
           break;
@@ -376,15 +323,10 @@ class WebSocketService {
           break;
           
         case MessageType.STATUS:
-          if (data.payload?.userId || data.from || data.payload?.from || data.payload?.from_user) {
-            // Get the user ID from any of the possible places it might be
-            const userId = data.payload?.userId || data.from || data.payload?.from || data.payload?.from_user;
+          const userId = data.payload?.userId || data.from || data.payload?.from || data.payload?.from_user;
+          if (userId) {
             const status = data.payload?.status || 'offline';
-            
-            // Use presence manager to update status
             presenceManager.updateContactStatus(userId, status as PresenceState);
-          } else {
-            console.warn('[WS] Received status update without userId:', data);
           }
           break;
           
@@ -400,38 +342,27 @@ class WebSocketService {
           
         case MessageType.READ_RECEIPT:
           if (data.payload?.messageId) {
+            const messageId = String(data.payload.messageId);
             const contactId = data.from || data.from_user || data.payload?.contactId;
             
             if (contactId) {
-              console.log(`[WS] Processing read receipt for message ${data.payload.messageId} from ${contactId}`);
-              
-              // If the payload contains allMessageIdsUpto, update all those messages
               if (data.payload.allMessageIdsUpto && Array.isArray(data.payload.allMessageIdsUpto)) {
-                data.payload.allMessageIdsUpto.forEach((msgId: string) => {
-                  chatStore.updateMessageStatus(msgId, contactId, 'read');
+                data.payload.allMessageIdsUpto.forEach((msgId: string | number) => {
+                  chatStore.updateMessageStatus(String(msgId), contactId, 'read');
                 });
               } else {
-                // Backward compatibility for single message receipts
-                chatStore.updateMessageStatus(data.payload.messageId, contactId, 'read');
+                chatStore.updateMessageStatus(messageId, contactId, 'read');
               }
-            } else {
-              console.warn('[WS] Read receipt missing contact ID:', data);
             }
-          } else {
-            console.warn('[WS] Read receipt missing message ID:', data);
           }
           break;
           
         case MessageType.PRESENCE:
-          if ((data.payload?.status || data.status) && (data.from || data.from_user || data.payload?.userId)) {
-            // Get the user ID from any of the possible places it might be
-            const userId = data.from || data.from_user || data.payload?.userId;
-            const status = data.payload?.status || data.status || 'offline';
-            
-            // Use presence manager to update status
-            presenceManager.updateContactStatus(userId, status as PresenceState);
-          } else {
-            console.warn('[WS] Received presence update with missing data:', data);
+          const presenceUserId = data.from || data.from_user || data.payload?.userId;
+          const presenceStatus = data.payload?.status || data.status || 'offline';
+          
+          if (presenceUserId) {
+            presenceManager.updateContactStatus(presenceUserId, presenceStatus as PresenceState);
           }
           break;
           
@@ -443,7 +374,6 @@ class WebSocketService {
           const action = reactionData.action;
           
           if (reactionMessageId && reactionSenderId && reaction && (action === 'add' || action === 'remove')) {
-            // Get the contact ID (the other user in the conversation)
             const contactId = user?.id === reactionSenderId ? data.to || data.to_user : reactionSenderId;
             
             if (contactId) {
@@ -454,141 +384,112 @@ class WebSocketService {
           
         case MessageType.EDIT:
           const editData = data.payload || {};
-          const editMessageId = editData.messageId;
+          const editMessageId = editData.messageId ? String(editData.messageId) : '';
           const editedText = editData.text;
-          const editedAt = editData.editedAt;
+          const editedAt = editData.editedAt || data.edited_at || new Date().toISOString();
           const editorId = data.from || data.from_user;
           
           if (editMessageId && editedText && editorId) {
-            // Get the contact ID
             const contactId = user?.id === editorId ? data.to || data.to_user : editorId;
             
             if (contactId) {
-              console.log(`[WS] Processing edit for message ${editMessageId} from ${editorId}`);
               chatStore.updateEditedMessage(editMessageId, contactId, editedText, editedAt);
+              this.notifyEventHandlers();
             }
           }
           break;
           
         case MessageType.DELETE:
           const deleteData = data.payload || {};
-          const deleteMessageId = deleteData.messageId;
+          const deleteMessageId = deleteData.messageId ? String(deleteData.messageId) : '';
+          const deletedAt = deleteData.deletedAt || data.deleted_at || new Date().toISOString();
           const deleterId = data.from || data.from_user;
           
           if (deleteMessageId && deleterId) {
-            // Get the contact ID
             const contactId = user?.id === deleterId ? data.to || data.to_user : deleterId;
             
             if (contactId) {
-              console.log(`[WS] Processing delete for message ${deleteMessageId} from ${deleterId}`);
-              chatStore.updateDeletedMessage(deleteMessageId, contactId);
+              chatStore.updateDeletedMessage(deleteMessageId, contactId, deletedAt);
+              this.notifyEventHandlers();
             }
           }
           break;
           
         case MessageType.REPLY:
-          // Handle like a regular message, addMessage already handles replies
           const replyMessage = this.transformMessage(data);
           
           if (replyMessage.senderId !== 'unknown' && replyMessage.receiverId !== 'unknown') {
-            // Make sure to include the replyTo field
             if (data.payload && data.payload.reply_to) {
-              // @ts-ignore - Adding replyTo property which is supported in the Message interface
               replyMessage.replyTo = data.payload.reply_to;
             }
             
             chatStore.addMessage(replyMessage);
             
             if (user && user.id !== replyMessage.senderId) {
-              this.sendReadReceipt(replyMessage.senderId, replyMessage.id);
+              this.queueReadReceipt(replyMessage.senderId, replyMessage.id);
             }
           }
           break;
           
         case MessageType.ERROR:
           const errorDetails = data.payload?.message || 'Unknown server error';
-          console.error('WebSocket error from server:', errorDetails);
           this.notifyErrorHandlers(errorDetails);
           break;
       }
 
-      // Notify all event handlers after processing any message
       this.notifyEventHandlers();
     } catch (error) {
-      console.error('Error handling WebSocket message:', error);
       this.notifyErrorHandlers(`Message handling error: ${error}`);
     }
   }
   
   private handleClose(event: CloseEvent) {
-    console.log(`[WS] Connection closed: ${event.code} ${event.reason || ''}`);
-    
-    // Clear presence interval
     if (this.presenceInterval) {
       clearTimeout(this.presenceInterval);
       this.presenceInterval = null;
     }
     
-    // Set socket to null to prevent sending messages to a closed socket
     if (this.socket?.readyState === WebSocket.CLOSED) {
       this.socket = null;
     }
     
-    // Only attempt reconnection if we were previously connected
     if (this.connectionState === 'connected') {
       this.connectionState = 'disconnected';
       
-      // Don't reconnect if it was a clean close by us
       if (event.wasClean) {
-        console.log('[WS] Clean connection close, not reconnecting');
         return;
       }
       
-      // Status Code 1000 (Normal Closure) or 1001 (Going Away) shouldn't trigger a reconnect
       if (event.code === 1000 || event.code === 1001) {
-        console.log(`[WS] Normal closure (${event.code}), not reconnecting`);
         return;
       }
       
-      // Don't reconnect if we've exceeded our max attempts
       if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-        console.error(`[WS] Maximum reconnect attempts (${this.maxReconnectAttempts}) exceeded`);
         return;
       }
       
       this.reconnectAttempts++;
       
-      // Exponential backoff for reconnect
       const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1);
-      console.log(`[WS] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`);
       
       this.reconnectTimer = setTimeout(() => {
-        console.log(`[WS] Attempting reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-        this.connect().catch(error => {
-          console.error('[WS] Reconnect attempt failed:', error);
+        this.connect().catch(() => {
+          // Reconnect attempt failed
         });
       }, delay);
     } else if (this.connectionState === 'connecting') {
-      // Handle case where connection closes during connection attempt
       this.connectionState = 'disconnected';
-      console.log('[WS] Connection closed during connection attempt');
     }
   }
   
   private handleError(error: Event) {
-    console.error('[WS] WebSocket error:', error);
     this.notifyErrorHandlers("WebSocket connection error");
     
-    // Check if we can determine if this is a network connectivity issue
     if (navigator && 'onLine' in navigator && !navigator.onLine) {
-      console.log('[WS] Browser is offline, waiting for online status');
-      
-      // Set up a one-time event listener for when we go back online
       const onlineHandler = () => {
-        console.log('[WS] Browser is back online, attempting to reconnect');
         window.removeEventListener('online', onlineHandler);
-        this.connect().catch(err => {
-          console.error('[WS] Reconnect attempt after going online failed:', err);
+        this.connect().catch(() => {
+          // Reconnect attempt failed
         });
       };
       
@@ -596,50 +497,37 @@ class WebSocketService {
     }
   }
   
-  private getReadyStateLabel(readyState: number): string {
-    const states = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
-    return states[readyState] || `UNKNOWN (${readyState})`;
-  }
-  
-  private send(message: WebSocketMessage) {
-    // Check socket exists and is in OPEN state (not CLOSING or CLOSED)
+  private send(message: WebSocketMessage): boolean {
     if (this.socket?.readyState === WebSocket.OPEN) {
       try {
         this.socket.send(JSON.stringify(message));
         return true;
       } catch (error) {
-        console.error('[WS] Error sending message:', error);
         this.notifyErrorHandlers("Error sending message: " + error);
         return false;
       }
     }
     
-    // Don't attempt to reconnect if socket is in CLOSING state
     if (this.socket?.readyState === WebSocket.CLOSING) {
-      console.warn('[WS] Cannot send message: WebSocket is closing');
       return false;
     }
     
-    // Handle case where we're not properly connected
     if (this.connectionState !== 'connected' || 
         !this.socket || 
         this.socket.readyState !== WebSocket.OPEN) {
       
-      console.log('[WS] Socket not ready, attempting to connect before sending message');
       this.connect().then(() => {
         setTimeout(() => {
           if (this.socket?.readyState === WebSocket.OPEN) {
             try {
               this.socket.send(JSON.stringify(message));
             } catch (error) {
-              console.error('[WS] Error sending message after reconnect:', error);
+              // Error sending message after reconnect
             }
-          } else {
-            console.warn('[WS] Socket still not ready after reconnect attempt');
           }
         }, 1000);
-      }).catch(error => {
-        console.error('[WS] Failed to connect before sending message:', error);
+      }).catch(() => {
+        // Failed to connect before sending message
       });
     }
     
@@ -651,25 +539,18 @@ class WebSocketService {
       try {
         this.socket.send('ping');
       } catch (error) {
-        console.error('[WS] Error sending ping:', error);
-        
-        // If we can't send a ping, the connection might be broken
-        // Force a reconnect
         if (this.connectionState === 'connected') {
-          console.warn('[WS] Reconnecting due to ping failure');
           this.connectionState = 'disconnected';
-          this.connect().catch(err => {
-            console.error('[WS] Reconnect attempt after ping failure failed:', err);
+          this.connect().catch(() => {
+            // Reconnect attempt failed
           });
         }
       }
     } else if (this.connectionState === 'connected' && 
                (!this.socket || this.socket.readyState !== WebSocket.OPEN)) {
-      // Connection state is inconsistent, try to fix it
-      console.warn('[WS] Ping failed: connection state inconsistent');
       this.connectionState = 'disconnected';
-      this.connect().catch(err => {
-        console.error('[WS] Reconnect attempt after ping inconsistency failed:', err);
+      this.connect().catch(() => {
+        // Reconnect attempt failed
       });
     }
   }
@@ -724,13 +605,11 @@ class WebSocketService {
     });
   }
   
-  /**
-   * Queue a read receipt for batch sending
-   * @param contactId ID of the contact who sent the message
-   * @param messageId ID of the message to mark as read
-   */
   private queueReadReceipt(contactId: string, messageId: string) {
-    // Add to queue instead of sending immediately
+    if (!contactId || !messageId) {
+      return;
+    }
+    
     if (!this.readReceiptQueue.has(contactId)) {
       this.readReceiptQueue.set(contactId, new Set());
     }
@@ -739,12 +618,9 @@ class WebSocketService {
     this.scheduleReadReceiptsBatch();
   }
   
-  /**
-   * Schedule sending of queued read receipts
-   */
   private scheduleReadReceiptsBatch() {
     if (this.readReceiptTimer) {
-      return; // Already scheduled
+      return;
     }
     
     this.readReceiptTimer = setTimeout(() => {
@@ -753,64 +629,44 @@ class WebSocketService {
     }, this.READ_RECEIPT_DELAY);
   }
 
-  /**
-   * Send all queued read receipts as a batch
-   */
   private sendQueuedReadReceipts() {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      if (this.readReceiptQueue.size > 0) {
+        this.scheduleReadReceiptsBatch();
+      }
       return;
     }
     
-    // Process each recipient's queue
+    const userId = useAuthStore.getState().user?.id;
+    if (!userId) {
+      return;
+    }
+    
     for (const [recipient, messageIds] of this.readReceiptQueue.entries()) {
       if (messageIds.size === 0) continue;
       
-      // Convert set to array
       const messages = Array.from(messageIds);
-      console.log(`[WS] Sending ${messages.length} read receipts to ${recipient}`);
       
-      // Send first message with regular read receipt
-      const firstMessage = messages[0];
       this.send({
-        type: MessageType.READ_RECEIPT,
-        from: useAuthStore.getState().user?.id || '',
+        type: MessageType.READ_RECEIPT_BATCH,
+        from: userId,
         to: recipient,
         payload: {
-          messageId: firstMessage,
-          contactId: recipient
+          messageIds: messages,
+          contactId: recipient,
+          timestamp: new Date().toISOString()
         }
       });
       
-      // If there are more messages, send them with a batch format
-      if (messages.length > 1) {
-        setTimeout(() => {
-          this.send({
-            type: MessageType.READ_RECEIPT_BATCH,
-            from: useAuthStore.getState().user?.id || '',
-            to: recipient,
-            payload: {
-              messageIds: messages.slice(1),
-              contactId: recipient
-            }
-          });
-        }, 100); // Small delay to ensure order
-      }
-      
-      // Update all message statuses locally
       const chatStore = useChatStore.getState();
       messages.forEach((msgId: string) => {
         chatStore.updateMessageStatus(msgId, recipient, 'read');
       });
       
-      // Clear the processed items
       this.readReceiptQueue.delete(recipient);
     }
   }
   
-  /**
-   * Force send any queued read receipts immediately
-   * Call this when the user navigates away from the conversation
-   */
   sendPendingReadReceipts() {
     if (this.readReceiptTimer) {
       clearTimeout(this.readReceiptTimer);
@@ -820,14 +676,24 @@ class WebSocketService {
     this.sendQueuedReadReceipts();
   }
   
-  /**
-   * Mark a message as read
-   * @param contactId ID of the contact who sent the message
-   * @param messageId ID of the message to mark as read
-   */
   sendReadReceipt(contactId: string, messageId: string) {
+    if (!contactId || !messageId) {
+      return;
+    }
+    
+    const { conversations } = useChatStore.getState();
+    const conversation = conversations[contactId];
+    
+    if (!conversation) {
+      return;
+    }
+    
+    const messageExists = conversation.messages.some(msg => msg.id === messageId);
+    if (!messageExists) {
+      return;
+    }
+    
     if (!this.socket || this.connectionState !== 'connected') {
-      console.log('[WS] Cannot send read receipt - not connected');
       return;
     }
     
@@ -837,7 +703,9 @@ class WebSocketService {
   getConnectionState() {
     return {
       state: this.connectionState,
-      readyState: this.socket ? this.getReadyStateLabel(this.socket.readyState) : 'No socket',
+      readyState: this.socket ? 
+        ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][this.socket.readyState] || `UNKNOWN (${this.socket.readyState})` : 
+        'No socket',
       reconnectAttempts: this.reconnectAttempts,
       url: this.socket?.url || null
     };
@@ -846,19 +714,15 @@ class WebSocketService {
   async testConnection(): Promise<boolean> {
     return new Promise((resolve) => {
       if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-        // Socket doesn't exist or isn't open
         resolve(false);
         return;
       }
       
-      // Send a small ping message to test connection
       try {
-        // Create a temporary timeout in case we don't get a response
         const timeout = setTimeout(() => {
           resolve(false);
-        }, 3000); // 3 second timeout
+        }, 3000);
         
-        // One-time handler to catch a pong response
         const pingHandler = (event: MessageEvent) => {
           try {
             const data = JSON.parse(event.data);
@@ -869,14 +733,12 @@ class WebSocketService {
               return;
             }
           } catch (error) {
-            // Ignore parsing errors for other messages
+            // Ignore parsing errors
           }
         };
         
-        // Add listener for pong
         this.socket.addEventListener('message', pingHandler);
         
-        // Send ping message
         const pingMessage = JSON.stringify({
           type: 'ping',
           timestamp: Date.now()
@@ -884,7 +746,6 @@ class WebSocketService {
         
         this.socket.send(pingMessage);
       } catch (error) {
-        console.error('[WebSocket] Error testing connection:', error);
         resolve(false);
       }
     });
@@ -903,26 +764,48 @@ class WebSocketService {
       try {
         handler(error);
       } catch (e) {
-        console.error('Error in WebSocket error handler:', e);
+        // Error in handler
       }
     });
   }
   
-  // Check if the WebSocket is connected
   isConnected() {
     return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
   }
   
-  // Send a reaction to a message
-  sendReaction(contactId: string, messageId: string, reaction: string, action: 'add' | 'remove') {
+  deleteMessage(contactId: string, messageId: string) {
     if (!this.isConnected()) {
-      console.error('[WS] Cannot send reaction: Not connected');
       return false;
     }
     
     const { user } = useAuthStore.getState();
     if (!user) {
-      console.error('[WS] Cannot send reaction: User not authenticated');
+      return false;
+    }
+    
+    const deleteMsg = {
+      type: MessageType.DELETE,
+      from: user.id,
+      to: contactId,
+      payload: {
+        messageId
+      }
+    };
+    
+    // Let the backend assign the timestamp and update the UI when we get the response
+    this.send(deleteMsg);
+    this.notifyEventHandlers();
+    
+    return true;
+  }
+  
+  sendReaction(contactId: string, messageId: string, reaction: string, action: 'add' | 'remove') {
+    if (!this.isConnected()) {
+      return false;
+    }
+    
+    const { user } = useAuthStore.getState();
+    if (!user) {
       return false;
     }
     
@@ -938,20 +821,28 @@ class WebSocketService {
       }
     };
     
+    const chatStore = useChatStore.getState();
+    chatStore.updateMessageReaction(
+      messageId, 
+      user.id, 
+      contactId, 
+      reaction, 
+      action
+    );
+    
     this.send(reactionMessage);
+    this.notifyEventHandlers();
+    
     return true;
   }
   
-  // Send an edited message
   editMessage(contactId: string, messageId: string, text: string) {
     if (!this.isConnected()) {
-      console.error('[WS] Cannot edit message: Not connected');
       return false;
     }
     
     const { user } = useAuthStore.getState();
     if (!user) {
-      console.error('[WS] Cannot edit message: User not authenticated');
       return false;
     }
     
@@ -961,58 +852,29 @@ class WebSocketService {
       to: contactId,
       payload: {
         messageId,
-        text,
-        editedAt: new Date().toISOString()
+        text
       }
     };
     
+    // Let the backend assign the timestamp and update the UI when we get the response
     this.send(editMsg);
+    this.notifyEventHandlers();
+    
     return true;
   }
   
-  // Delete a message
-  deleteMessage(contactId: string, messageId: string) {
-    if (!this.isConnected()) {
-      console.error('[WS] Cannot delete message: Not connected');
-      return false;
-    }
-    
-    const { user } = useAuthStore.getState();
-    if (!user) {
-      console.error('[WS] Cannot delete message: User not authenticated');
-      return false;
-    }
-    
-    const deleteMsg = {
-      type: MessageType.DELETE,
-      from: user.id,
-      to: contactId,
-      payload: {
-        messageId
-      }
-    };
-    
-    this.send(deleteMsg);
-    return true;
-  }
-  
-  // Send a reply to a message
   sendReply(contactId: string, text: string, replyToMessageId: string, attachments: any[] = []) {
     if (!this.isConnected()) {
-      console.error('[WS] Cannot send reply: Not connected');
       return undefined;
     }
     
     const { user } = useAuthStore.getState();
     if (!user) {
-      console.error('[WS] Cannot send reply: User not authenticated');
       return undefined;
     }
     
-    // Generate a temporary ID for the message
     const messageId = `tmp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
-    // Create message object
     const replyMsg = {
       type: MessageType.REPLY,
       from: user.id,
@@ -1027,7 +889,6 @@ class WebSocketService {
       }
     };
     
-    // Prepare message data for local state
     const localMessage = {
       id: messageId,
       senderId: user.id,
@@ -1039,30 +900,17 @@ class WebSocketService {
       replyTo: replyToMessageId
     };
     
-    // Add message to local state first for immediate UI update
     useChatStore.getState().addMessage(localMessage);
-    
-    // Send via WebSocket
     this.send(replyMsg);
     
     return messageId;
   }
 
-  /**
-   * Send user's timezone information to the server
-   * @param timezone User's timezone (e.g. 'America/New_York')
-   * @param verifyOnly If true, just verify the timezone without updating
-   */
   sendUserTimezone(timezone: string, verifyOnly: boolean = false) {
-    if (!this.isConnected()) {
-      // Only attempt to connect if we're actually updating the timezone (not just verifying)
-      if (!verifyOnly) {
-        console.warn('[WS] Cannot send timezone, not connected');
-        // Queue the timezone send for when we connect
-        this.connect().then(() => this.sendUserTimezone(timezone, verifyOnly)).catch(err => {
-          console.error('[WS] Failed to connect to send timezone:', err);
-        });
-      }
+    if (!this.isConnected() && !verifyOnly) {
+      this.connect().then(() => this.sendUserTimezone(timezone, verifyOnly)).catch(() => {
+        // Failed to connect
+      });
       return;
     }
     
@@ -1081,23 +929,11 @@ class WebSocketService {
       };
       
       this.send(message);
-      
-      // Only log at debug level to reduce console spam
-      if (verifyOnly) {
-        console.debug(`[WS] Sent timezone verification for: ${timezone}`);
-      } else {
-        console.log(`[WS] Sent timezone update: ${timezone}`);
-      }
     } catch (error) {
-      console.error('[WS] Error sending timezone:', error);
+      // Error sending timezone
     }
   }
 
-  /**
-   * Subscribe to all WebSocket events. Callback will be called after any WebSocket message is processed.
-   * @param callback Function to call when a WebSocket event occurs
-   * @returns Unsubscribe function
-   */
   subscribeToEvents(callback: () => void): () => void {
     this.eventHandlers.push(callback);
     
@@ -1193,6 +1029,83 @@ class WebSocketService {
         timestamp: new Date().toISOString()
       }
     });
+  }
+
+  /**
+   * Subscribe to direct WebSocket events with event data 
+   * @param handler Function to handle WebSocket message events with data
+   */
+  onEvent(handler: (event: any) => void): void {
+    this.messageHandlers.push(handler);
+  }
+  
+  /**
+   * Unsubscribe from direct WebSocket events
+   * @param handler Function to remove from handlers
+   */
+  offEvent(handler: (event: any) => void): void {
+    this.messageHandlers = this.messageHandlers.filter(h => h !== handler);
+  }
+  
+  /**
+   * Notify all message handlers with the event data
+   * @param event The WebSocket event data to pass to handlers
+   */
+  private notifyMessageHandlers(event: any): void {
+    try {
+      // Skip system messages like ping/pong
+      if (event.type === 'ping' || event.type === 'pong') {
+        return;
+      }
+      
+      // Process the event before passing it to handlers
+      switch (event.type) {
+        case MessageType.REACTION:
+          // Make sure reactions have the necessary properties
+          if (event.payload) {
+            if (!event.payload.user_id && event.from) {
+              event.payload.user_id = event.from;
+            }
+            if (!event.payload.contact_id && event.to) {
+              event.payload.contact_id = event.to;
+            }
+          }
+          break;
+          
+        case MessageType.EDIT:
+        case MessageType.DELETE:
+          // Make sure edit/delete events have user_id and contact_id
+          if (event.payload) {
+            if (!event.payload.user_id && event.from) {
+              event.payload.user_id = event.from;
+            }
+            if (!event.payload.contact_id && event.to) {
+              event.payload.contact_id = event.to;
+            }
+          }
+          break;
+          
+        case MessageType.READ_RECEIPT:
+          // Make sure read receipts have contact_id
+          if (event.payload) {
+            if (!event.payload.contact_id && event.from) {
+              event.payload.contact_id = event.from;
+            }
+          }
+          break;
+      }
+      
+      // Notify all message handlers
+      this.messageHandlers.forEach(handler => {
+        try {
+          handler(event);
+        } catch (error) {
+          console.error('Error in WebSocket message handler:', error);
+        }
+      });
+    } catch (error) {
+      console.error('Error processing WebSocket event before notifying handlers:', error);
+    }
   }
 }
 

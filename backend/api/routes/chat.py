@@ -13,14 +13,10 @@ from db.mongodb import (
 from schemas.conversation import (
     ConversationResponse,
     ConversationWithMessages,
-    ConversationUpdate,
 )
 from schemas.message import MessageResponse
 
-# Configure logging
 logger = logging.getLogger(__name__)
-
-# Create router
 router = APIRouter()
 
 
@@ -31,10 +27,6 @@ async def get_chat_history(
     before: str = None,
     current_user: FirebaseToken = Depends(get_current_user),
 ):
-    """
-    Get chat history between the current user and another user.
-    """
-    # Check if the other user exists
     users_collection = get_users_collection()
     other_user = await users_collection.find_one({"firebase_uid": user_id})
 
@@ -43,13 +35,9 @@ async def get_chat_history(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    # Create conversation ID (sort user IDs to ensure consistency)
     conversation_id = f"{min(current_user.firebase_uid, user_id)}_{max(current_user.firebase_uid, user_id)}"
-
-    # Get messages
     messages_collection = get_messages_collection()
 
-    # Build query
     query = {
         "conversation_id": conversation_id,
         "$or": [
@@ -58,7 +46,6 @@ async def get_chat_history(
         ],
     }
 
-    # Add pagination if before timestamp is provided
     if before:
         try:
             before_dt = datetime.fromisoformat(before.replace("Z", "+00:00"))
@@ -69,53 +56,40 @@ async def get_chat_history(
                 detail="Invalid 'before' parameter format. Use ISO 8601 format.",
             )
 
-    # Get messages with pagination
     cursor = messages_collection.find(query).sort("created_at", -1).limit(limit)
     messages = await cursor.to_list(length=limit)
 
-    # Process messages
     processed_messages = []
     for message in messages:
-        # Convert ObjectId to string
         message["_id"] = str(message["_id"])
 
-        # Handle messages from websocket which might have text in payload
         if "payload" in message and message.get("type") == "message":
             if "text" in message["payload"]:
                 message["text"] = message["payload"]["text"]
 
-        # Ensure message has text field
         if "text" not in message:
-            message["text"] = ""  # Provide a default value for text
+            message["text"] = ""
 
-        # Standardize reactions field format if present
         if "reactions" in message and message["reactions"]:
-            # Ensure reactions is properly formatted for the frontend
             for reaction in message["reactions"]:
                 if "user_id" not in reaction:
                     reaction["user_id"] = reaction.get("userId", "unknown")
                 if "created_at" not in reaction and "timestamp" in reaction:
                     reaction["created_at"] = reaction["timestamp"]
 
-        # Standardize fields for edited/deleted status
-        if "is_edited" not in message:
-            message["is_edited"] = False
+        message["is_edited"] = message.get("is_edited", False)
+        message["is_deleted"] = message.get("is_deleted", False)
 
-        if "is_deleted" not in message:
-            message["is_deleted"] = False
-
-        # Ensure reply_to field is present
         if "reply_to" not in message and "replyTo" in message:
             message["reply_to"] = message["replyTo"]
 
-        # Use the from_db method to create proper MessageResponse objects
         processed_messages.append(MessageResponse.model_validate(message))
 
-    # Mark unread messages as read
-    unread_ids = [
+    unread_messages = [
         (
             ObjectId(msg.id)
-            if len(msg.id) == 24
+            if isinstance(msg.id, str)
+            and len(msg.id) == 24
             and all(c in "0123456789abcdef" for c in msg.id.lower())
             else msg.id
         )
@@ -123,10 +97,12 @@ async def get_chat_history(
         if msg.recipient_id == current_user.firebase_uid and msg.status != "read"
     ]
 
-    if unread_ids:
+    if unread_messages:
         now = datetime.utcnow()
-        # Filter out any IDs that aren't ObjectId objects
-        object_ids = [msg_id for msg_id in unread_ids if isinstance(msg_id, ObjectId)]
+        object_ids = [
+            msg_id for msg_id in unread_messages if isinstance(msg_id, ObjectId)
+        ]
+        string_ids = [msg_id for msg_id in unread_messages if isinstance(msg_id, str)]
 
         if object_ids:
             await messages_collection.update_many(
@@ -134,29 +110,20 @@ async def get_chat_history(
                 {"$set": {"status": "read", "read_at": now}},
             )
 
-        # Handle string IDs (from websocket) separately
-        string_ids = [msg_id for msg_id in unread_ids if isinstance(msg_id, str)]
         if string_ids:
             await messages_collection.update_many(
                 {"_id": {"$in": string_ids}},
                 {"$set": {"status": "read", "read_at": now}},
             )
 
-    # Sort messages by created_at
     processed_messages.sort(key=lambda x: x.created_at)
-
     return processed_messages
 
 
 @router.get("/", response_model=List[ConversationResponse])
 async def get_conversations(current_user: FirebaseToken = Depends(get_current_user)):
-    """
-    Get all conversations for the current user.
-    """
-    # Get conversations
     conversations_collection = get_conversations_collection()
 
-    # Find conversations where the current user is a participant
     cursor = conversations_collection.find(
         {
             "$or": [
@@ -164,23 +131,18 @@ async def get_conversations(current_user: FirebaseToken = Depends(get_current_us
                 {"user_id_2": current_user.firebase_uid},
             ]
         }
-    ).sort(
-        [("is_pinned", -1), ("last_message_at", -1)]
-    )  # First sort by pinned status, then by last message time
+    ).sort([("is_pinned", -1), ("last_message_at", -1)])
 
     conversations = await cursor.to_list(length=100)
 
-    # Add the "other_user_id" field to each conversation
     result = []
     for conv in conversations:
         conv["_id"] = str(conv["_id"])
-
-        # Determine the other user
-        if conv["user_id_1"] == current_user.firebase_uid:
-            conv["other_user_id"] = conv["user_id_2"]
-        else:
-            conv["other_user_id"] = conv["user_id_1"]
-
+        conv["other_user_id"] = (
+            conv["user_id_2"]
+            if conv["user_id_1"] == current_user.firebase_uid
+            else conv["user_id_1"]
+        )
         result.append(conv)
 
     return result
@@ -192,13 +154,8 @@ async def get_conversation_with_messages(
     limit: int = Query(50, ge=1, le=100),
     current_user: FirebaseToken = Depends(get_current_user),
 ):
-    """
-    Get a conversation and its recent messages.
-    """
-    # Get the conversation
     conversations_collection = get_conversations_collection()
 
-    # Make sure the current user is a participant
     conversation = await conversations_collection.find_one(
         {
             "_id": ObjectId(conversation_id),
@@ -214,35 +171,28 @@ async def get_conversation_with_messages(
             status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
         )
 
-    # Convert ObjectId to string
     conversation["_id"] = str(conversation["_id"])
+    conversation["other_user_id"] = (
+        conversation["user_id_2"]
+        if conversation["user_id_1"] == current_user.firebase_uid
+        else conversation["user_id_1"]
+    )
 
-    # Determine the other user
-    if conversation["user_id_1"] == current_user.firebase_uid:
-        conversation["other_user_id"] = conversation["user_id_2"]
-    else:
-        conversation["other_user_id"] = conversation["user_id_1"]
-
-    # Get recent messages
     messages_collection = get_messages_collection()
+    user_id_1, user_id_2 = conversation["user_id_1"], conversation["user_id_2"]
+    conversation_key = f"{min(user_id_1, user_id_2)}_{max(user_id_1, user_id_2)}"
+
     cursor = (
-        messages_collection.find(
-            {
-                "conversation_id": f"{min(conversation['user_id_1'], conversation['user_id_2'])}_{max(conversation['user_id_1'], conversation['user_id_2'])}"
-            }
-        )
+        messages_collection.find({"conversation_id": conversation_key})
         .sort("created_at", -1)
         .limit(limit)
     )
-
     messages = await cursor.to_list(length=limit)
 
-    # Convert ObjectId to string for each message
     for message in messages:
         message["_id"] = str(message["_id"])
 
-    # Mark unread messages as read
-    unread_messages = [
+    unread_message_ids = [
         (
             ObjectId(msg["_id"])
             if len(msg["_id"]) == 24
@@ -253,11 +203,13 @@ async def get_conversation_with_messages(
         if msg["recipient_id"] == current_user.firebase_uid and msg["status"] != "read"
     ]
 
-    if unread_messages:
+    if unread_message_ids:
         now = datetime.utcnow()
-        # Filter out any IDs that aren't ObjectId objects
         object_ids = [
-            msg_id for msg_id in unread_messages if isinstance(msg_id, ObjectId)
+            msg_id for msg_id in unread_message_ids if isinstance(msg_id, ObjectId)
+        ]
+        string_ids = [
+            msg_id for msg_id in unread_message_ids if isinstance(msg_id, str)
         ]
 
         if object_ids:
@@ -266,18 +218,13 @@ async def get_conversation_with_messages(
                 {"$set": {"status": "read", "read_at": now}},
             )
 
-        # Handle string IDs (from websocket) separately
-        string_ids = [msg_id for msg_id in unread_messages if isinstance(msg_id, str)]
         if string_ids:
             await messages_collection.update_many(
                 {"_id": {"$in": string_ids}},
                 {"$set": {"status": "read", "read_at": now}},
             )
 
-    # Sort messages by created_at
     messages.sort(key=lambda x: x["created_at"])
-
-    # Add messages to the conversation
     conversation["messages"] = messages
 
     return conversation
@@ -289,16 +236,8 @@ async def pin_conversation(
     is_pinned: bool,
     current_user: FirebaseToken = Depends(get_current_user),
 ):
-    """
-    Pin or unpin a conversation
-    """
-    # Create conversation ID (sort user IDs to ensure consistency)
-    conversation_id = f"{min(current_user.firebase_uid, user_id)}_{max(current_user.firebase_uid, user_id)}"
-
-    # Find the conversation
     conversations_collection = get_conversations_collection()
 
-    # First, check if the conversation exists
     conversation = await conversations_collection.find_one(
         {
             "$or": [
@@ -309,7 +248,6 @@ async def pin_conversation(
     )
 
     if not conversation:
-        # Create a new conversation if it doesn't exist
         new_conversation = {
             "user_id_1": min(current_user.firebase_uid, user_id),
             "user_id_2": max(current_user.firebase_uid, user_id),
@@ -322,14 +260,8 @@ async def pin_conversation(
         result = await conversations_collection.insert_one(new_conversation)
         conversation_id = str(result.inserted_id)
     else:
-        # Update existing conversation
         await conversations_collection.update_one(
-            {
-                "$or": [
-                    {"user_id_1": current_user.firebase_uid, "user_id_2": user_id},
-                    {"user_id_1": user_id, "user_id_2": current_user.firebase_uid},
-                ]
-            },
+            {"_id": conversation["_id"]},
             {"$set": {"is_pinned": is_pinned, "updated_at": datetime.utcnow()}},
         )
         conversation_id = str(conversation["_id"])
@@ -343,10 +275,6 @@ async def mark_conversation_unread(
     is_unread: bool,
     current_user: FirebaseToken = Depends(get_current_user),
 ):
-    """
-    Mark a conversation as read or unread
-    """
-    # Find the conversation
     conversations_collection = get_conversations_collection()
 
     result = await conversations_collection.update_one(
@@ -372,22 +300,15 @@ async def delete_conversation(
     user_id: str,
     current_user: FirebaseToken = Depends(get_current_user),
 ):
-    """
-    Completely delete a conversation and all its messages
-    """
-    # Create conversation ID (sort user IDs to ensure consistency)
     conversation_id = f"{min(current_user.firebase_uid, user_id)}_{max(current_user.firebase_uid, user_id)}"
 
-    # Get collections
     conversations_collection = get_conversations_collection()
     messages_collection = get_messages_collection()
 
-    # Delete all messages in the conversation
     delete_messages_result = await messages_collection.delete_many(
         {"conversation_id": conversation_id}
     )
 
-    # Delete the conversation
     delete_conversation_result = await conversations_collection.delete_one(
         {
             "$or": [
@@ -398,7 +319,6 @@ async def delete_conversation(
     )
 
     if delete_conversation_result.deleted_count == 0:
-        # If the conversation wasn't found, it's fine - we've still deleted any messages
         logger.info(f"No conversation found to delete for {conversation_id}")
 
     return {

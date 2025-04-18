@@ -1,8 +1,9 @@
 from enum import Enum, auto
 from typing import Optional, List, Dict, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uuid
 from datetime import datetime
+import json
 
 
 class WebSocketMessageType(str, Enum):
@@ -186,12 +187,6 @@ class ReplyMessage(TextMessage):
 
     type: WebSocketMessageType = WebSocketMessageType.REPLY
 
-    def dict(self, *args, **kwargs):
-        d = super().dict(*args, **kwargs)
-        # Make sure type is correctly set
-        d["type"] = WebSocketMessageType.REPLY
-        return d
-
 
 class EditMessage(WebSocketMessage):
     """
@@ -203,14 +198,48 @@ class EditMessage(WebSocketMessage):
     text: str
     edited_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_payload_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            payload = data.get("payload")
+            if isinstance(payload, dict):
+                # Extract fields from payload if they exist and aren't already at root
+                if "messageId" in payload and "message_id" not in data:
+                    data["message_id"] = payload.get("messageId")
+                elif "message_id" in payload and "message_id" not in data:
+                    data["message_id"] = payload.get("message_id")
+
+                if "text" in payload and "text" not in data:
+                    data["text"] = payload.get("text")
+
+                if "editedAt" in payload and "edited_at" not in data:
+                    data["edited_at"] = payload.get("editedAt")
+                elif "edited_at" in payload and "edited_at" not in data:
+                    data["edited_at"] = payload.get("edited_at")
+
+            # Ensure edited_at is set if missing after potential extraction
+            if "edited_at" not in data:
+                data["edited_at"] = datetime.utcnow().isoformat()
+
+        # Allow 'id' as an alias for 'message_id' at the root
+        if isinstance(data, dict) and "id" in data and "message_id" not in data:
+            data["message_id"] = data["id"]
+
+        # Let Pydantic's validation handle missing required fields like message_id or text
+        return data
+
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
         # Move payload-related fields under payload
-        d["payload"] = {
-            "messageId": d.pop("message_id"),
-            "text": d.pop("text"),
-            "editedAt": d.pop("edited_at"),
+        payload = {
+            "messageId": self.message_id,  # Use validated self attributes
+            "text": self.text,
+            "editedAt": self.edited_at,
         }
+        d["payload"] = payload
         return d
 
 
@@ -221,13 +250,50 @@ class DeleteMessage(WebSocketMessage):
 
     type: WebSocketMessageType = WebSocketMessageType.DELETE
     message_id: str
+    deleted_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_payload_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            payload = data.get("payload")
+            if isinstance(payload, dict):
+                # Extract fields from payload if they exist and aren't already at root
+                if "messageId" in payload and "message_id" not in data:
+                    data["message_id"] = payload.get("messageId")
+                elif "message_id" in payload and "message_id" not in data:
+                    data["message_id"] = payload.get("message_id")
+
+                if "deletedAt" in payload and "deleted_at" not in data:
+                    data["deleted_at"] = payload.get("deletedAt")
+                elif "deleted_at" in payload and "deleted_at" not in data:
+                    data["deleted_at"] = payload.get("deleted_at")
+
+            # Also allow 'id' as an alias for 'message_id' at the root
+            if "id" in data and "message_id" not in data:
+                data["message_id"] = data["id"]
+
+            # Ensure deleted_at is set if missing after potential extraction
+            if "deleted_at" not in data:
+                data["deleted_at"] = datetime.utcnow().isoformat()
+
+        # We let Pydantic's main validation handle the missing 'message_id' error
+        # if it's still not present after this pre-processing.
+        # Adding a check here would be redundant.
+
+        return data
 
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
         # Move payload-related fields under payload
-        d["payload"] = {
-            "messageId": d.pop("message_id"),
+        # Ensure we access the validated attributes from self
+        payload = {
+            "messageId": self.message_id,
+            "deletedAt": self.deleted_at,
         }
+        d["payload"] = payload
         return d
 
 
@@ -241,21 +307,24 @@ class ErrorMessage(BaseModel):
     message: str
 
     def dict(self, *args, **kwargs):
-        d = super().dict(*args, **kwargs)
-        # Move payload-related fields under payload
-        d["payload"] = {"code": d.pop("code"), "message": d.pop("message")}
-        return d
+        # Pydantic v2 automatically handles aliases in dict if populate_by_name is True
+        # Let's simplify to rely on Pydantic's dict() and structure manually for JSON
+        base_dict = super().model_dump(*args, **kwargs)  # Use model_dump in Pydantic v2
+        return {
+            "type": self.type,
+            "payload": {
+                "code": base_dict.get("code"),
+                "message": base_dict.get("message"),
+            },
+        }
 
     def json(self, *args, **kwargs):
         """
         Generate JSON representation making sure to include the type and payload correctly.
         """
-        import json
-
-        data = {
-            "type": self.type,
-            "payload": {"code": self.code, "message": self.message},
-        }
+        # Use the custom dict method to get the desired structure
+        data = self.dict(*args, **kwargs)
+        # Use standard json.dumps
         return json.dumps(data)
 
 

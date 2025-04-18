@@ -47,8 +47,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const [activityNotifications, setActivityNotifications] = useState<ActivityNotification[]>([]);
   const observedMessagesRef = useRef<Set<string>>(new Set());
   
-  // Keep a reference to the previous conversation state to compare for changes
-  const previousMessagesRef = useRef<Record<string, any>>({});
+  // Force a refresh every time there's a websocket event
+  const [wsEventCounter, setWsEventCounter] = useState(0);
   
   const { user } = useAuthStore();
   const { conversations, typingIndicators } = useChatStore();
@@ -62,6 +62,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   
   const emojiPickerRef = useRef<HTMLDivElement>(null);
+  
+  // Keep a reference to the previous conversation state to compare for changes
+  const previousMessagesRef = useRef<Record<string, any>>({});
   
   if (!contacts || contacts.length === 0) {
     return (
@@ -247,7 +250,50 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     previousMessagesRef.current[contactId] = { ...currentMessagesById };
   }, [contactId, user, conversations, showActivityNotification]);
   
-  // Force a refresh on WebSocket events to ensure UI updates
+  // Subscribe directly to WebSocket message events for notifications
+  useEffect(() => {
+    if (!contactId || !user) return;
+    
+    const handleWebSocketMessage = (event: any) => {
+      if (!event || !event.type) return;
+      
+      switch (event.type) {
+        case 'reaction':
+          if (event.payload?.user_id && event.payload?.message_id) {
+            showActivityNotification('react', event.payload.user_id, event.payload.message_id);
+          }
+          break;
+          
+        case 'edit':
+          if (event.payload?.user_id && event.payload?.message_id) {
+            showActivityNotification('edit', event.payload.user_id, event.payload.message_id);
+          }
+          break;
+          
+        case 'delete':
+          if (event.payload?.user_id && event.payload?.message_id) {
+            showActivityNotification('delete', event.payload.user_id, event.payload.message_id);
+          }
+          break;
+          
+        case 'read_receipt':
+        case 'read_receipt_batch':
+          if (event.from && event.from !== user.id) {
+            showActivityNotification('read', event.from);
+          }
+          break;
+      }
+    };
+    
+    // Subscribe to WebSocket message events
+    websocketService.onEvent(handleWebSocketMessage);
+    
+    return () => {
+      websocketService.offEvent(handleWebSocketMessage);
+    };
+  }, [contactId, user, showActivityNotification]);
+  
+  // Subscribe to WebSocket events to force UI updates
   useEffect(() => {
     if (!contactId) return;
     
@@ -255,23 +301,36 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     
     const handleWebSocketEvent = () => {
       console.log('[ChatWindow] WebSocket event received, forcing state refresh');
+      setWsEventCounter(prev => prev + 1);
       
-      // Force a complete rebuild of the previous messages reference
-      // This ensures the next comparison will detect changes
-      const currentConversation = conversations[contactId];
-      if (currentConversation && currentConversation.messages) {
-        // Set to empty object first to ensure we'll detect all changes
-        previousMessagesRef.current[contactId] = {};
-        
-        // Force a re-render by updating state
-        setActivityNotifications(prev => [...prev]);
+      // Handle case where messages weren't properly loaded
+      if (conversations?.[contactId]?.messages?.length === 0) {
+        console.log('[ChatWindow] No messages loaded, fetching messages...');
+        useChatStore.getState().fetchMessagesForContact(contactId);
       }
     };
+    
+    // Check for any missed read receipts
+    const conversation = conversations?.[contactId];
+    if (conversation?.messages?.length > 0) {
+      // Find unread messages from the contact
+      const unreadMessages = conversation.messages.filter(
+        msg => msg.senderId === contactId && msg.status !== 'read'
+      );
+      
+      if (unreadMessages.length > 0) {
+        // Send read receipts for all unread messages
+        unreadMessages.forEach(msg => {
+          websocketService.sendReadReceipt(contactId, msg.id);
+        });
+      }
+    }
     
     const unsubscribe = websocketService.subscribeToEvents(handleWebSocketEvent);
     
     return () => {
       console.log('[ChatWindow] Cleaning up WebSocket event subscription');
+      websocketService.sendPendingReadReceipts(); // Send any pending read receipts before unmounting
       if (unsubscribe) unsubscribe();
     };
   }, [contactId, conversations]);
