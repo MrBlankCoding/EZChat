@@ -7,7 +7,6 @@ import { useContactsStore } from '../stores/contactsStore';
 import ContactList from '../components/ContactList';
 import ChatWindow from '../components/ChatWindow';
 import websocketService from '../services/websocketService';
-import WebSocketDebugger from '../components/WebSocketDebugger';
 
 const ChatPage = () => {
   const { contactId } = useParams<{ contactId: string }>();
@@ -89,9 +88,6 @@ const ChatPage = () => {
           </div>
         )}
       </div>
-      
-      {/* Debug tool */}
-      <WebSocketDebugger />
     </div>
   );
 };
