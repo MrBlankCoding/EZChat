@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -71,68 +71,66 @@ function App() {
 
   return (
     <AuthProvider>
-      <Router>
-        <div className="transition-colors duration-200">
-          <Toaster
-            position="top-right"
-            toastOptions={{
-              className: 'bg-white dark:bg-dark-800 dark:text-white rounded-xl shadow-soft-md',
-              duration: 5000,
-            }}
+      <div className="transition-colors duration-200">
+        <Toaster
+          position="top-right"
+          toastOptions={{
+            className: 'bg-white dark:bg-dark-800 dark:text-white rounded-xl shadow-soft-md',
+            duration: 5000,
+          }}
+        />
+        
+        <Routes>
+          {/* Public Routes */}
+          <Route path="/login" element={isAuthenticated ? <Navigate to="/" /> : <LoginPage />} />
+          <Route path="/register" element={isAuthenticated ? <Navigate to="/" /> : <RegisterPage />} />
+          
+          {/* Protected Routes */}
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <Navigate to="/chat" />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/chat"
+            element={
+              <ProtectedRoute>
+                <ChatPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/chat/:contactId"
+            element={
+              <ProtectedRoute>
+                <ChatPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/contacts"
+            element={
+              <ProtectedRoute>
+                <ContactsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <SettingsPage />
+              </ProtectedRoute>
+            }
           />
           
-          <Routes>
-            {/* Public Routes */}
-            <Route path="/login" element={isAuthenticated ? <Navigate to="/" /> : <LoginPage />} />
-            <Route path="/register" element={isAuthenticated ? <Navigate to="/" /> : <RegisterPage />} />
-            
-            {/* Protected Routes */}
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  <Navigate to="/chat" />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/chat"
-              element={
-                <ProtectedRoute>
-                  <ChatPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/chat/:contactId"
-              element={
-                <ProtectedRoute>
-                  <ChatPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/contacts"
-              element={
-                <ProtectedRoute>
-                  <ContactsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                <ProtectedRoute>
-                  <SettingsPage />
-                </ProtectedRoute>
-              }
-            />
-            
-            {/* 404 Route */}
-            <Route path="*" element={<NotFoundPage />} />
-          </Routes>
-        </div>
-      </Router>
+          {/* 404 Route */}
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </div>
     </AuthProvider>
   );
 }
