@@ -32,9 +32,42 @@ async def connect_to_mongodb():
 
         db = client[MONGODB_DB_NAME]
         logger.info(f"Connected to MongoDB: {MONGODB_URI}, database: {MONGODB_DB_NAME}")
+
+        # Create indexes for efficient querying
+        await create_indexes()
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB: {e}")
         raise
+
+
+async def create_indexes():
+    """
+    Create indexes for efficient querying.
+    """
+    try:
+        # Create indexes for messages collection
+        messages_collection = get_messages_collection()
+        await messages_collection.create_index("conversation_id")
+        await messages_collection.create_index("sender_id")
+        await messages_collection.create_index("recipient_id")
+        await messages_collection.create_index("created_at")
+        await messages_collection.create_index(
+            [("conversation_id", 1), ("created_at", -1)]
+        )
+
+        # Index for reactions
+        await messages_collection.create_index([("reactions.user_id", 1), ("_id", 1)])
+
+        # Index for replies
+        await messages_collection.create_index("reply_to")
+
+        # Indexes for edited/deleted messages
+        await messages_collection.create_index("is_edited")
+        await messages_collection.create_index("is_deleted")
+
+        logger.info("MongoDB indexes created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create MongoDB indexes: {e}")
 
 
 async def close_mongodb_connection():

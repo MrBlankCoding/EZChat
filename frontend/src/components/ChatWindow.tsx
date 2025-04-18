@@ -283,6 +283,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
                 key={msg.id}
                 message={msg}
                 isOwn={msg.senderId === user?.id}
+                contactId={contactId}
               />
             ))}
             

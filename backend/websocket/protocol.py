@@ -16,6 +16,10 @@ class WebSocketMessageType(str, Enum):
     DELIVERY_RECEIPT = "delivery_receipt"
     PRESENCE = "presence"
     ERROR = "error"
+    REACTION = "reaction"
+    REPLY = "reply"
+    EDIT = "edit"
+    DELETE = "delete"
 
 
 class WebSocketMessage(BaseModel):
@@ -53,6 +57,7 @@ class TextMessage(WebSocketMessage):
     timestamp: str
     status: str
     attachments: Optional[List[AttachmentData]] = None
+    reply_to: Optional[str] = None
 
     model_config = {"populate_by_name": True}
 
@@ -67,6 +72,8 @@ class TextMessage(WebSocketMessage):
         }
         if "attachments" in d:
             payload["attachments"] = d.pop("attachments")
+        if "reply_to" in d and d["reply_to"]:
+            payload["reply_to"] = d.pop("reply_to")
         d["payload"] = payload
         return d
 
@@ -141,6 +148,80 @@ class PresenceMessage(WebSocketMessage):
         d = super().dict(*args, **kwargs)
         # Move payload-related fields under payload
         d["payload"] = {"status": d.pop("status"), "lastSeen": d.pop("last_seen")}
+        return d
+
+
+class ReactionMessage(WebSocketMessage):
+    """
+    Message reaction.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.REACTION
+    message_id: str
+    reaction: str
+    action: str  # "add" or "remove"
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Move payload-related fields under payload
+        d["payload"] = {
+            "messageId": d.pop("message_id"),
+            "reaction": d.pop("reaction"),
+            "action": d.pop("action"),
+            "timestamp": d.pop("timestamp"),
+        }
+        return d
+
+
+class ReplyMessage(TextMessage):
+    """
+    Reply to a message.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.REPLY
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        d["type"] = WebSocketMessageType.REPLY
+        return d
+
+
+class EditMessage(WebSocketMessage):
+    """
+    Edit an existing message.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.EDIT
+    message_id: str
+    text: str
+    edited_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Move payload-related fields under payload
+        d["payload"] = {
+            "messageId": d.pop("message_id"),
+            "text": d.pop("text"),
+            "editedAt": d.pop("edited_at"),
+        }
+        return d
+
+
+class DeleteMessage(WebSocketMessage):
+    """
+    Delete a message.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.DELETE
+    message_id: str
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Move payload-related fields under payload
+        d["payload"] = {
+            "messageId": d.pop("message_id"),
+        }
         return d
 
 

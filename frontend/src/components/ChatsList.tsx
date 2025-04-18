@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatStore } from '../stores/chatStore';
 import { useContactsStore } from '../stores/contactsStore';
-import { MagnifyingGlassIcon, XMarkIcon, EllipsisHorizontalIcon, TrashIcon, EnvelopeIcon, MapPinIcon, UserPlusIcon } from '@heroicons/react/24/outline';
+import { MagnifyingGlassIcon, XMarkIcon, EllipsisHorizontalIcon, TrashIcon, EnvelopeIcon, MapPinIcon, UserPlusIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { MapPinIcon as MapPinIconSolid } from '@heroicons/react/24/solid';
+import NewChatModal from './NewChatModal';
 import toast from 'react-hot-toast';
 
 const ChatsList = () => {
@@ -19,11 +20,12 @@ const ChatsList = () => {
   } = useChatStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
+  const [showNewChatModal, setShowNewChatModal] = useState(false);
 
-  // Get contacts with active conversations (those that have at least one message)
+  // Get contacts with active conversations
   const contactsWithChats = contacts.filter(contact => {
-    const conversation = conversations[contact.contact_id];
-    return conversation && conversation.messages && conversation.messages.length > 0;
+    // Get conversations that exist in the conversations object
+    return conversations[contact.contact_id] !== undefined;
   });
 
   // Filter chats by search term
@@ -115,12 +117,22 @@ const ChatsList = () => {
       <div className="p-4 border-b border-gray-200 dark:border-dark-700">
         <div className="flex justify-between items-center mb-3">
           <h2 className="text-lg font-medium text-gray-900 dark:text-white">Chats</h2>
-          <button
-            onClick={() => navigate('/contacts')}
-            className="p-1.5 text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-secondary-400 rounded-full bg-gray-100 dark:bg-dark-800 hover:bg-gray-200 dark:hover:bg-dark-700 transition-colors"
-          >
-            <UserPlusIcon className="h-5 w-5" />
-          </button>
+          <div className="flex space-x-1">
+            <button
+              onClick={() => setShowNewChatModal(true)}
+              className="p-1.5 text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-secondary-400 rounded-full bg-gray-100 dark:bg-dark-800 hover:bg-gray-200 dark:hover:bg-dark-700 transition-colors"
+              title="New Chat"
+            >
+              <PlusIcon className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => navigate('/contacts')}
+              className="p-1.5 text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-secondary-400 rounded-full bg-gray-100 dark:bg-dark-800 hover:bg-gray-200 dark:hover:bg-dark-700 transition-colors"
+              title="Go to Contacts"
+            >
+              <UserPlusIcon className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Search */}
@@ -159,10 +171,10 @@ const ChatsList = () => {
               <>
                 <p className="text-gray-500 dark:text-gray-400 mb-1">You don't have any active conversations</p>
                 <button
-                  onClick={() => navigate('/contacts')}
+                  onClick={() => setShowNewChatModal(true)}
                   className="mt-2 px-3 py-1.5 text-sm text-white bg-primary-600 dark:bg-secondary-600 hover:bg-primary-700 dark:hover:bg-secondary-700 rounded-lg transition-colors focus:outline-none"
                 >
-                  Go to contacts
+                  Start a New Chat
                 </button>
               </>
             )}
@@ -292,6 +304,11 @@ const ChatsList = () => {
           </ul>
         )}
       </div>
+      
+      {/* New Chat Modal */}
+      {showNewChatModal && (
+        <NewChatModal onClose={() => setShowNewChatModal(false)} />
+      )}
     </div>
   );
 };

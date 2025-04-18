@@ -10,7 +10,11 @@ enum MessageType {
   DELIVERY_RECEIPT = "delivery_receipt",
   READ_RECEIPT = "read_receipt",
   ERROR = "error",
-  PRESENCE = "presence"
+  PRESENCE = "presence",
+  REACTION = "reaction",
+  REPLY = "reply",
+  EDIT = "edit",
+  DELETE = "delete"
 }
 
 interface WebSocketMessage {
@@ -29,6 +33,12 @@ interface WebSocketMessage {
   status?: 'sent' | 'delivered' | 'read';
   attachments?: any[];
   is_typing?: boolean;
+  reply_to?: string;
+  is_edited?: boolean;
+  edited_at?: string;
+  is_deleted?: boolean;
+  deleted_at?: string;
+  reactions?: any[];
   payload: any;
 }
 
@@ -210,7 +220,13 @@ class WebSocketService {
                  data.timestamp || data.created_at || new Date().toISOString(),
       status: (data.payload?.status as 'sent' | 'delivered' | 'read') || 
               (data.status as 'sent' | 'delivered' | 'read') || 'sent',
-      attachments: data.payload?.attachments || data.attachments || []
+      attachments: data.payload?.attachments || data.attachments || [],
+      reactions: data.payload?.reactions || [],
+      replyTo: data.payload?.reply_to || data.reply_to,
+      isEdited: data.payload?.is_edited || data.is_edited || false,
+      editedAt: data.payload?.edited_at || data.edited_at,
+      isDeleted: data.payload?.is_deleted || data.is_deleted || false,
+      deletedAt: data.payload?.deleted_at || data.deleted_at
     };
 
     return message;
@@ -288,6 +304,74 @@ class WebSocketService {
         case MessageType.PRESENCE:
           if (data.payload?.status && data.from) {
             chatStore.updateContactStatus(data.from, data.payload.status);
+          }
+          break;
+          
+        case MessageType.REACTION:
+          const reactionData = data.payload || {};
+          const reactionMessageId = reactionData.messageId;
+          const reactionSenderId = data.from || data.from_user;
+          const reaction = reactionData.reaction;
+          const action = reactionData.action;
+          
+          if (reactionMessageId && reactionSenderId && reaction && (action === 'add' || action === 'remove')) {
+            // Get the contact ID (the other user in the conversation)
+            const contactId = user?.id === reactionSenderId ? data.to || data.to_user : reactionSenderId;
+            
+            if (contactId) {
+              chatStore.updateMessageReaction(reactionMessageId, reactionSenderId, contactId, reaction, action);
+            }
+          }
+          break;
+          
+        case MessageType.EDIT:
+          const editData = data.payload || {};
+          const editMessageId = editData.messageId;
+          const editedText = editData.text;
+          const editedAt = editData.editedAt;
+          const editorId = data.from || data.from_user;
+          
+          if (editMessageId && editedText && editorId) {
+            // Get the contact ID
+            const contactId = user?.id === editorId ? data.to || data.to_user : editorId;
+            
+            if (contactId) {
+              chatStore.updateEditedMessage(editMessageId, contactId, editedText, editedAt);
+            }
+          }
+          break;
+          
+        case MessageType.DELETE:
+          const deleteData = data.payload || {};
+          const deleteMessageId = deleteData.messageId;
+          const deleterId = data.from || data.from_user;
+          
+          if (deleteMessageId && deleterId) {
+            // Get the contact ID
+            const contactId = user?.id === deleterId ? data.to || data.to_user : deleterId;
+            
+            if (contactId) {
+              chatStore.updateDeletedMessage(deleteMessageId, contactId);
+            }
+          }
+          break;
+          
+        case MessageType.REPLY:
+          // Handle like a regular message, addMessage already handles replies
+          const replyMessage = this.transformMessage(data);
+          
+          if (replyMessage.senderId !== 'unknown' && replyMessage.receiverId !== 'unknown') {
+            // Make sure to include the replyTo field
+            if (data.payload && data.payload.reply_to) {
+              // @ts-ignore - Adding replyTo property which is supported in the Message interface
+              replyMessage.replyTo = data.payload.reply_to;
+            }
+            
+            chatStore.addMessage(replyMessage);
+            
+            if (user && user.id !== replyMessage.senderId) {
+              this.sendReadReceipt(replyMessage.senderId, replyMessage.id);
+            }
           }
           break;
           
@@ -539,6 +623,146 @@ class WebSocketService {
         console.error('Error in WebSocket error handler:', e);
       }
     });
+  }
+  
+  // Check if the WebSocket is connected
+  isConnected() {
+    return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+  }
+  
+  // Send a reaction to a message
+  sendReaction(contactId: string, messageId: string, reaction: string, action: 'add' | 'remove') {
+    if (!this.isConnected()) {
+      console.error('[WS] Cannot send reaction: Not connected');
+      return false;
+    }
+    
+    const { user } = useAuthStore.getState();
+    if (!user) {
+      console.error('[WS] Cannot send reaction: User not authenticated');
+      return false;
+    }
+    
+    const reactionMessage = {
+      type: MessageType.REACTION,
+      from: user.id,
+      to: contactId,
+      payload: {
+        messageId,
+        reaction,
+        action,
+        timestamp: new Date().toISOString()
+      }
+    };
+    
+    this.send(reactionMessage);
+    return true;
+  }
+  
+  // Send an edited message
+  editMessage(contactId: string, messageId: string, text: string) {
+    if (!this.isConnected()) {
+      console.error('[WS] Cannot edit message: Not connected');
+      return false;
+    }
+    
+    const { user } = useAuthStore.getState();
+    if (!user) {
+      console.error('[WS] Cannot edit message: User not authenticated');
+      return false;
+    }
+    
+    const editMsg = {
+      type: MessageType.EDIT,
+      from: user.id,
+      to: contactId,
+      payload: {
+        messageId,
+        text,
+        editedAt: new Date().toISOString()
+      }
+    };
+    
+    this.send(editMsg);
+    return true;
+  }
+  
+  // Delete a message
+  deleteMessage(contactId: string, messageId: string) {
+    if (!this.isConnected()) {
+      console.error('[WS] Cannot delete message: Not connected');
+      return false;
+    }
+    
+    const { user } = useAuthStore.getState();
+    if (!user) {
+      console.error('[WS] Cannot delete message: User not authenticated');
+      return false;
+    }
+    
+    const deleteMsg = {
+      type: MessageType.DELETE,
+      from: user.id,
+      to: contactId,
+      payload: {
+        messageId
+      }
+    };
+    
+    this.send(deleteMsg);
+    return true;
+  }
+  
+  // Send a reply to a message
+  sendReply(contactId: string, text: string, replyToMessageId: string, attachments: any[] = []) {
+    if (!this.isConnected()) {
+      console.error('[WS] Cannot send reply: Not connected');
+      return undefined;
+    }
+    
+    const { user } = useAuthStore.getState();
+    if (!user) {
+      console.error('[WS] Cannot send reply: User not authenticated');
+      return undefined;
+    }
+    
+    // Generate a temporary ID for the message
+    const messageId = `tmp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Create message object
+    const replyMsg = {
+      type: MessageType.REPLY,
+      from: user.id,
+      to: contactId,
+      payload: {
+        id: messageId,
+        text,
+        timestamp: new Date().toISOString(),
+        status: 'sent',
+        attachments,
+        reply_to: replyToMessageId
+      }
+    };
+    
+    // Prepare message data for local state
+    const localMessage = {
+      id: messageId,
+      senderId: user.id,
+      receiverId: contactId,
+      text,
+      timestamp: new Date().toISOString(),
+      status: 'sent' as const,
+      attachments,
+      replyTo: replyToMessageId
+    };
+    
+    // Add message to local state first for immediate UI update
+    useChatStore.getState().addMessage(localMessage);
+    
+    // Send via WebSocket
+    this.send(replyMsg);
+    
+    return messageId;
   }
 }
 

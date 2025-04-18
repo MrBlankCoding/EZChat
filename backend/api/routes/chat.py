@@ -88,6 +88,26 @@ async def get_chat_history(
         if "text" not in message:
             message["text"] = ""  # Provide a default value for text
 
+        # Standardize reactions field format if present
+        if "reactions" in message and message["reactions"]:
+            # Ensure reactions is properly formatted for the frontend
+            for reaction in message["reactions"]:
+                if "user_id" not in reaction:
+                    reaction["user_id"] = reaction.get("userId", "unknown")
+                if "created_at" not in reaction and "timestamp" in reaction:
+                    reaction["created_at"] = reaction["timestamp"]
+
+        # Standardize fields for edited/deleted status
+        if "is_edited" not in message:
+            message["is_edited"] = False
+
+        if "is_deleted" not in message:
+            message["is_deleted"] = False
+
+        # Ensure reply_to field is present
+        if "reply_to" not in message and "replyTo" in message:
+            message["reply_to"] = message["replyTo"]
+
         # Use the from_db method to create proper MessageResponse objects
         processed_messages.append(MessageResponse.model_validate(message))
 

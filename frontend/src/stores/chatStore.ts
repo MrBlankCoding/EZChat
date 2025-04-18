@@ -3,6 +3,12 @@ import apiClient from '../services/apiClient';
 import websocketService from '../services/websocketService';
 import { useAuthStore } from './authStore';
 
+export interface Reaction {
+  userId: string;
+  reaction: string;
+  timestamp: string;
+}
+
 export interface Message {
   id: string;
   senderId: string;
@@ -11,6 +17,12 @@ export interface Message {
   timestamp: number | string;
   status: 'sent' | 'delivered' | 'read';
   attachments?: any[];
+  reactions?: Reaction[];
+  replyTo?: string;
+  isEdited?: boolean;
+  editedAt?: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
 }
 
 export interface Conversation {
@@ -41,6 +53,15 @@ interface ChatState {
   pinConversation: (contactId: string, isPinned: boolean) => Promise<void>;
   markConversationAsUnread: (contactId: string, isUnread: boolean) => Promise<void>;
   deleteConversation: (contactId: string) => Promise<void>;
+  
+  addReaction: (messageId: string, contactId: string, reaction: string) => Promise<boolean>;
+  removeReaction: (messageId: string, contactId: string, reaction: string) => Promise<boolean>;
+  updateMessageReaction: (messageId: string, senderId: string, contactId: string, reaction: string, action: 'add' | 'remove') => void;
+  editMessage: (messageId: string, contactId: string, text: string) => Promise<boolean>;
+  updateEditedMessage: (messageId: string, contactId: string, text: string, editedAt: string) => void;
+  deleteMessage: (messageId: string, contactId: string) => Promise<boolean>;
+  updateDeletedMessage: (messageId: string, contactId: string) => void;
+  sendReply: (contactId: string, text: string, replyToMessageId: string, attachments: any[]) => Promise<void>;
 }
 
 const useChatStore = create<ChatState>((set, get) => ({
@@ -55,15 +76,19 @@ const useChatStore = create<ChatState>((set, get) => ({
     
     const { conversations } = get();
     
-    // Only fetch messages for this contact if they don't exist already,
-    // but don't create an empty conversation entry
     if (conversations[contactId]) {
       // If we already have a conversation, mark it as read if unread
       if (conversations[contactId]?.isUnread) {
         get().markConversationAsUnread(contactId, false);
       }
     } else {
-      // Only fetch messages if there's an existing conversation
+      // Create an empty conversation entry and fetch messages
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: { contactId, messages: [] }
+        }
+      });
       get().fetchMessagesForContact(contactId);
     }
   },
@@ -86,30 +111,40 @@ const useChatStore = create<ChatState>((set, get) => ({
         text: message.text || '',
         timestamp: message.timestamp || message.created_at,
         status: message.status || 'sent',
-        attachments: message.attachments || []
+        attachments: message.attachments || [],
+        // Include reaction data
+        reactions: message.reactions?.map((r: any) => ({
+          userId: r.user_id,
+          reaction: r.reaction,
+          timestamp: r.created_at || new Date().toISOString()
+        })) || [],
+        // Include reply information
+        replyTo: message.reply_to,
+        // Include edit information
+        isEdited: message.is_edited || false,
+        editedAt: message.edited_at,
+        // Include deletion status
+        isDeleted: message.is_deleted || false,
+        deletedAt: message.deleted_at
       }));
       
-      // Only create/update a conversation if there are messages
-      if (messages.length > 0) {
-        const { conversations } = get();
-        const existingConversation = conversations[contactId] || {};
-        
-        set({
-          conversations: {
-            ...conversations,
-            [contactId]: {
-              ...existingConversation,
-              contactId,
-              messages,
-              isPinned: existingConversation.isPinned || false,
-              isUnread: existingConversation.isUnread || false
-            }
-          },
-          isLoading: false
-        });
-      } else {
-        set({ isLoading: false });
-      }
+      // Update the conversation entry regardless of whether there are messages
+      const { conversations } = get();
+      const existingConversation = conversations[contactId] || {};
+      
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: {
+            ...existingConversation,
+            contactId,
+            messages,
+            isPinned: existingConversation.isPinned || false,
+            isUnread: existingConversation.isUnread || false
+          }
+        },
+        isLoading: false
+      });
     } catch (error) {
       set({ 
         error: error instanceof Error ? error.message : 'Failed to fetch messages',
@@ -304,19 +339,12 @@ const useChatStore = create<ChatState>((set, get) => ({
   
   deleteConversation: async (contactId: string) => {
     try {
-      // First, immediately update the UI by clearing the messages from the conversation
+      // First, immediately update the UI by removing the conversation
       const { conversations, activeConversationId } = get();
       
-      // Create a copy with an empty messages array for this contact
+      // Create a copy without the deleted conversation
       const updatedConversations = { ...conversations };
-      if (updatedConversations[contactId]) {
-        updatedConversations[contactId] = {
-          ...updatedConversations[contactId],
-          messages: [],
-          isPinned: false,
-          isUnread: false
-        };
-      }
+      delete updatedConversations[contactId];
       
       // If the deleted conversation was active, set activeConversationId to null
       const newActiveId = activeConversationId === contactId ? null : activeConversationId;
@@ -339,6 +367,318 @@ const useChatStore = create<ChatState>((set, get) => ({
       // This maintains immediate UI feedback even if the backend operation fails
       set({ 
         error: error instanceof Error ? error.message : 'Failed to delete conversation',
+        isLoading: false
+      });
+    }
+  },
+  
+  addReaction: async (messageId: string, contactId: string, reaction: string) => {
+    const { user } = useAuthStore.getState();
+    if (!user) return false;
+    
+    try {
+      // Send reaction via websocket
+      websocketService.sendReaction(contactId, messageId, reaction, 'add');
+      
+      // Update local state
+      const { conversations } = get();
+      const conversation = conversations[contactId];
+      
+      if (!conversation) return false;
+      
+      const updatedMessages = conversation.messages.map(message => {
+        if (message.id === messageId) {
+          const reactions = message.reactions || [];
+          // Check if reaction already exists
+          const existingReaction = reactions.find(r => r.userId === user.id && r.reaction === reaction);
+          
+          if (!existingReaction) {
+            return {
+              ...message,
+              reactions: [
+                ...reactions,
+                {
+                  userId: user.id,
+                  reaction,
+                  timestamp: new Date().toISOString()
+                }
+              ]
+            };
+          }
+        }
+        return message;
+      });
+      
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: {
+            ...conversation,
+            messages: updatedMessages
+          }
+        }
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('Error adding reaction:', error);
+      return false;
+    }
+  },
+  
+  removeReaction: async (messageId: string, contactId: string, reaction: string) => {
+    const { user } = useAuthStore.getState();
+    if (!user) return false;
+    
+    try {
+      // Send reaction removal via websocket
+      websocketService.sendReaction(contactId, messageId, reaction, 'remove');
+      
+      // Update local state
+      const { conversations } = get();
+      const conversation = conversations[contactId];
+      
+      if (!conversation) return false;
+      
+      const updatedMessages = conversation.messages.map(message => {
+        if (message.id === messageId && message.reactions) {
+          return {
+            ...message,
+            reactions: message.reactions.filter(r => !(r.userId === user.id && r.reaction === reaction))
+          };
+        }
+        return message;
+      });
+      
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: {
+            ...conversation,
+            messages: updatedMessages
+          }
+        }
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('Error removing reaction:', error);
+      return false;
+    }
+  },
+  
+  updateMessageReaction: (messageId: string, senderId: string, contactId: string, reaction: string, action: 'add' | 'remove') => {
+    const { conversations } = get();
+    const conversation = conversations[contactId];
+    
+    if (!conversation) return;
+    
+    const updatedMessages = conversation.messages.map(message => {
+      if (message.id === messageId) {
+        const reactions = message.reactions || [];
+        
+        if (action === 'add') {
+          // Add reaction if it doesn't exist
+          const existingReaction = reactions.find(r => r.userId === senderId && r.reaction === reaction);
+          
+          if (!existingReaction) {
+            return {
+              ...message,
+              reactions: [
+                ...reactions,
+                {
+                  userId: senderId,
+                  reaction,
+                  timestamp: new Date().toISOString()
+                }
+              ]
+            };
+          }
+        } else {
+          // Remove reaction
+          return {
+            ...message,
+            reactions: reactions.filter(r => !(r.userId === senderId && r.reaction === reaction))
+          };
+        }
+      }
+      return message;
+    });
+    
+    set({
+      conversations: {
+        ...conversations,
+        [contactId]: {
+          ...conversation,
+          messages: updatedMessages
+        }
+      }
+    });
+  },
+  
+  editMessage: async (messageId: string, contactId: string, text: string) => {
+    const { user } = useAuthStore.getState();
+    if (!user) return false;
+    
+    try {
+      // Send edit via websocket
+      websocketService.editMessage(contactId, messageId, text);
+      
+      // Update local state
+      const { conversations } = get();
+      const conversation = conversations[contactId];
+      
+      if (!conversation) return false;
+      
+      const updatedMessages = conversation.messages.map(message => {
+        if (message.id === messageId && message.senderId === user.id) {
+          return {
+            ...message,
+            text,
+            isEdited: true,
+            editedAt: new Date().toISOString()
+          };
+        }
+        return message;
+      });
+      
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: {
+            ...conversation,
+            messages: updatedMessages
+          }
+        }
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('Error editing message:', error);
+      return false;
+    }
+  },
+  
+  updateEditedMessage: (messageId: string, contactId: string, text: string, editedAt: string) => {
+    const { conversations } = get();
+    const conversation = conversations[contactId];
+    
+    if (!conversation) return;
+    
+    const updatedMessages = conversation.messages.map(message => {
+      if (message.id === messageId) {
+        return {
+          ...message,
+          text,
+          isEdited: true,
+          editedAt
+        };
+      }
+      return message;
+    });
+    
+    set({
+      conversations: {
+        ...conversations,
+        [contactId]: {
+          ...conversation,
+          messages: updatedMessages
+        }
+      }
+    });
+  },
+  
+  deleteMessage: async (messageId: string, contactId: string) => {
+    const { user } = useAuthStore.getState();
+    if (!user) return false;
+    
+    try {
+      // Send delete via websocket
+      websocketService.deleteMessage(contactId, messageId);
+      
+      // Update local state
+      const { conversations } = get();
+      const conversation = conversations[contactId];
+      
+      if (!conversation) return false;
+      
+      const updatedMessages = conversation.messages.map(message => {
+        if (message.id === messageId && message.senderId === user.id) {
+          return {
+            ...message,
+            text: 'This message was deleted',
+            isDeleted: true,
+            deletedAt: new Date().toISOString(),
+            attachments: []
+          };
+        }
+        return message;
+      });
+      
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: {
+            ...conversation,
+            messages: updatedMessages
+          }
+        }
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      return false;
+    }
+  },
+  
+  updateDeletedMessage: (messageId: string, contactId: string) => {
+    const { conversations } = get();
+    const conversation = conversations[contactId];
+    
+    if (!conversation) return;
+    
+    const updatedMessages = conversation.messages.map(message => {
+      if (message.id === messageId) {
+        return {
+          ...message,
+          text: 'This message was deleted',
+          isDeleted: true,
+          deletedAt: new Date().toISOString(),
+          attachments: []
+        };
+      }
+      return message;
+    });
+    
+    set({
+      conversations: {
+        ...conversations,
+        [contactId]: {
+          ...conversation,
+          messages: updatedMessages
+        }
+      }
+    });
+  },
+  
+  sendReply: async (contactId: string, text: string, replyToMessageId: string, attachments: any[] = []) => {
+    try {
+      set({ isLoading: true, error: null });
+      
+      const { user } = useAuthStore.getState();
+      if (!user) {
+        set({ error: 'User not authenticated', isLoading: false });
+        return;
+      }
+      
+      // Send the reply via WebSocket
+      websocketService.sendReply(contactId, text, replyToMessageId, attachments);
+      
+      set({ isLoading: false });
+    } catch (error) {
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to send reply',
         isLoading: false
       });
     }
