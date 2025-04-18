@@ -158,3 +158,15 @@ class ErrorMessage(BaseModel):
         # Move payload-related fields under payload
         d["payload"] = {"code": d.pop("code"), "message": d.pop("message")}
         return d
+
+    def json(self, *args, **kwargs):
+        """
+        Generate JSON representation making sure to include the type and payload correctly.
+        """
+        import json
+
+        data = {
+            "type": self.type,
+            "payload": {"code": self.code, "message": self.message},
+        }
+        return json.dumps(data)

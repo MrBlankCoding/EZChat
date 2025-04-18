@@ -62,6 +62,10 @@ if os.getenv("DEBUG", "False").lower() == "true":
         "tauri://localhost",
         "http://localhost",
         "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        # Add with wildcard ports
+        "http://localhost:*",
+        "http://127.0.0.1:*",
     ]
     # Remove any empty strings
     allowed_origins = [origin for origin in allowed_origins if origin]
@@ -69,7 +73,7 @@ if os.getenv("DEBUG", "False").lower() == "true":
 logger.info(f"Configured CORS with origins: {allowed_origins}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=["*"],  # Allow all origins in development
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:[0-9]+)?",  # Allow any localhost port
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],

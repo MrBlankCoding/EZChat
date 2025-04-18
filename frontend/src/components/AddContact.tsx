@@ -43,7 +43,7 @@ const AddContact = ({ onClose }: AddContactProps) => {
       }
       
       // Try direct fetch API approach
-      const response = await fetch(`http://localhost:8000/api/user/search?query=${encodeURIComponent(searchQuery)}`, {
+      const response = await fetch(`http://127.0.0.1:8000/api/user/search?query=${encodeURIComponent(searchQuery)}`, {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
@@ -106,9 +106,29 @@ const AddContact = ({ onClose }: AddContactProps) => {
   // Handle accepting a contact request
   const handleAcceptContact = async (contactId: string) => {
     try {
+      if (!contactId || contactId === 'undefined') {
+        console.error('Invalid contact ID:', contactId);
+        toast.error('Invalid contact ID');
+        return;
+      }
+      
+      console.log('Accepting contact request for ID:', contactId);
+      
+      // Debug pending contacts
+      console.log('All pending contacts:', pendingContacts);
+      
+      // Debug matching contact
+      const matchingContact = pendingContacts.find(c => c._id === contactId);
+      if (matchingContact) {
+        console.log('Matching contact found:', matchingContact);
+      } else {
+        console.warn('No matching contact found with _id:', contactId);
+      }
+      
       await acceptContact(contactId);
       toast.success('Contact request accepted');
     } catch (error) {
+      console.error('Error accepting contact request:', error);
       toast.error('Failed to accept contact request');
     }
   };
@@ -156,29 +176,34 @@ const AddContact = ({ onClose }: AddContactProps) => {
             <div className="mb-4">
               <h3 className="text-sm font-medium text-gray-700 mb-2">Pending Requests</h3>
               <ul className="divide-y divide-gray-200 bg-gray-50 rounded-md">
-                {pendingContacts.map((contact) => (
-                  <li key={contact.id} className="py-3 px-4 flex items-center justify-between">
-                    <div className="flex items-center">
-                      <img
-                        className="h-8 w-8 rounded-full object-cover"
-                        src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
-                        alt={contact.contact_display_name}
-                      />
-                      <div className="ml-3">
-                        <p className="text-sm font-medium text-gray-900">{contact.contact_display_name}</p>
-                        <p className="text-xs text-gray-500">{contact.contact_email}</p>
+                {pendingContacts.map((contact, index) => {
+                  console.log(`Rendering pending contact ${index}:`, contact);
+                  return (
+                    <li key={`pending-${contact._id}-${index}`} className="py-3 px-4 flex items-center justify-between">
+                      <div className="flex items-center">
+                        <img
+                          className="h-8 w-8 rounded-full object-cover"
+                          src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
+                          alt={contact.contact_display_name}
+                        />
+                        <div className="ml-3">
+                          <p className="text-sm font-medium text-gray-900">{contact.contact_display_name}</p>
+                          <p className="text-xs text-gray-500">{contact.contact_email}</p>
+                          {/* Debug info - remove in production */}
+                          <p className="text-xs text-gray-400">ID: {contact._id}</p>
+                        </div>
                       </div>
-                    </div>
-                    <button
-                      onClick={() => handleAcceptContact(contact.id)}
-                      disabled={isLoading}
-                      className="inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
-                    >
-                      <CheckIcon className="h-4 w-4 mr-1" />
-                      Accept
-                    </button>
-                  </li>
-                ))}
+                      <button
+                        onClick={() => handleAcceptContact(contact._id)}
+                        disabled={isLoading}
+                        className="inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
+                      >
+                        <CheckIcon className="h-4 w-4 mr-1" />
+                        Accept
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
@@ -188,8 +213,8 @@ const AddContact = ({ onClose }: AddContactProps) => {
             <div>
               <h3 className="text-sm font-medium text-gray-700 mb-2">Search Results</h3>
               <ul className="divide-y divide-gray-200 bg-gray-50 rounded-md">
-                {searchResults.map((user) => (
-                  <li key={user.firebase_uid} className="py-3 px-4 flex items-center justify-between">
+                {searchResults.map((user, index) => (
+                  <li key={`search-${user.firebase_uid}-${index}`} className="py-3 px-4 flex items-center justify-between">
                     <div className="flex items-center">
                       <img
                         className="h-8 w-8 rounded-full object-cover"

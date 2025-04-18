@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import apiClient from '../services/apiClient';
 import { Contact } from './contactsStore';
+import websocketService from '../services/websocketService';
+import { useAuthStore } from './authStore';
 
 // Message types
 export interface Message {
@@ -8,7 +10,7 @@ export interface Message {
   senderId: string;
   receiverId: string;
   text: string;
-  timestamp: number;
+  timestamp: number | string;
   status: 'sent' | 'delivered' | 'read';
   attachments?: any[];
 }
@@ -31,10 +33,12 @@ interface ChatState {
   // Actions
   setActiveConversation: (contactId: string) => void;
   fetchMessagesForContact: (contactId: string) => Promise<void>;
-  sendMessage: (contactId: string, text: string, attachments?: any[]) => Promise<void>;
+  sendMessage: (contactId: string, text: string, attachments?: any[]) => Promise<string | undefined>;
   addMessage: (message: Message) => void;
   markMessagesAsRead: (contactId: string) => Promise<void>;
   setTypingIndicator: (contactId: string, isTyping: boolean) => void;
+  updateContactStatus: (userId: string, status: string) => void;
+  updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read') => void;
   clearError: () => void;
 }
 
@@ -73,8 +77,40 @@ const useChatStore = create<ChatState>((set, get) => ({
     try {
       set({ isLoading: true, error: null });
       
-      const response = await apiClient.get(`/chats/${contactId}/messages`);
-      const messages = response.data;
+      const { user } = useAuthStore.getState();
+      if (!user) {
+        console.error('Cannot fetch messages: User not authenticated');
+        set({ 
+          error: 'User not authenticated',
+          isLoading: false
+        });
+        return;
+      }
+      
+      // Log the request before making it
+      console.log(`Fetching messages for contact: ${contactId}`);
+      
+      // Fix URL path - remove duplicate /api prefix
+      const response = await apiClient.get(`/chats/${contactId}`);
+      let messages = response.data;
+      
+      console.log(`Received ${messages.length} messages from API:`, messages);
+      
+      // Transform API response to match our frontend Message format
+      messages = messages.map((message: any) => {
+        return {
+          id: message.id || message._id,
+          senderId: message.senderId || message.sender_id,
+          receiverId: message.receiverId || message.recipient_id,
+          text: message.text || '',
+          timestamp: message.timestamp || message.created_at,
+          status: message.status || 'sent',
+          attachments: message.attachments || []
+        };
+      });
+      
+      // Log the transformed messages
+      console.log('Transformed messages:', messages);
       
       // Update conversation
       const { conversations } = get();
@@ -105,49 +141,12 @@ const useChatStore = create<ChatState>((set, get) => ({
     try {
       set({ isLoading: true, error: null });
       
-      // Create a temporary message
-      const tempMessage: Message = {
-        id: `temp-${Date.now()}`,
-        senderId: 'current-user', // This would normally come from auth store
-        receiverId: contactId,
-        text,
-        timestamp: Date.now(),
-        status: 'sent',
-        attachments
-      };
+      // Use websocketService instead of direct API call
+      const messageId = websocketService.sendMessage(contactId, text, attachments);
       
-      // Add to conversation
-      get().addMessage(tempMessage);
-      
-      // Send to API
-      const response = await apiClient.post(`/chats/${contactId}/messages`, {
-        text,
-        attachments
-      });
-      
-      // Update with real message data from server
-      const realMessage = response.data;
-      
-      // Replace temp message with real one
-      const { conversations } = get();
-      const conversation = conversations[contactId];
-      
-      if (conversation) {
-        const updatedMessages = conversation.messages.map(msg => 
-          msg.id === tempMessage.id ? realMessage : msg
-        );
-        
-        set({
-          conversations: {
-            ...conversations,
-            [contactId]: {
-              ...conversation,
-              messages: updatedMessages
-            }
-          },
-          isLoading: false
-        });
-      }
+      // Note: The message is already added to the store by websocketService.sendMessage
+      set({ isLoading: false });
+      return messageId;
     } catch (error) {
       console.error('Error sending message:', error);
       set({ 
@@ -159,12 +158,27 @@ const useChatStore = create<ChatState>((set, get) => ({
   
   // Add a message to a conversation
   addMessage: (message: Message) => {
-    const contactId = message.senderId === 'current-user' 
+    const { user } = useAuthStore.getState();
+    if (!user) return;
+    
+    // Determine the correct contactId based on whether the current user is the sender or receiver
+    const contactId = message.senderId === user.id 
       ? message.receiverId 
       : message.senderId;
     
+    console.log('Adding message to conversation:', {
+      messageId: message.id,
+      senderId: message.senderId,
+      receiverId: message.receiverId,
+      contactId
+    });
+    
     const { conversations } = get();
     const conversation = conversations[contactId] || { contactId, messages: [] };
+    
+    // Check if message already exists to avoid duplicates
+    const messageExists = conversation.messages.some(m => m.id === message.id);
+    if (messageExists) return;
     
     set({
       conversations: {
@@ -215,6 +229,38 @@ const useChatStore = create<ChatState>((set, get) => ({
       typingIndicators: {
         ...get().typingIndicators,
         [contactId]: isTyping
+      }
+    });
+  },
+  
+  // Update contact status
+  updateContactStatus: (userId: string, status: string) => {
+    // This would typically notify another store to update the contact status
+    // We can just log it for now
+    console.log(`Updating status for user ${userId} to ${status}`);
+    // This would be implemented to sync with contactsStore if needed
+  },
+  
+  // Update message status (delivered or read)
+  updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read') => {
+    const { conversations } = get();
+    const conversation = conversations[contactId];
+    
+    if (!conversation) return;
+    
+    // Find and update the message
+    const updatedMessages = conversation.messages.map(message => 
+      message.id === messageId ? { ...message, status } : message
+    );
+    
+    // Update the conversation
+    set({
+      conversations: {
+        ...conversations,
+        [contactId]: {
+          ...conversation,
+          messages: updatedMessages
+        }
       }
     });
   },

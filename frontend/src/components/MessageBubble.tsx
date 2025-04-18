@@ -34,7 +34,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
   const renderAttachment = (attachment: Attachment, index: number): React.ReactNode => {
     if (attachment.type === 'image') {
       return (
-        <div key={index} className="mb-1 rounded-lg overflow-hidden">
+        <div className="mb-1 rounded-lg overflow-hidden">
           <img
             src={attachment.url}
             alt={attachment.name}
@@ -48,7 +48,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
       );
     } else if (attachment.type === 'video') {
       return (
-        <div key={index} className="mb-1 rounded-lg overflow-hidden">
+        <div className="mb-1 rounded-lg overflow-hidden">
           <video
             src={attachment.url}
             controls
@@ -61,7 +61,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
       );
     } else if (attachment.type === 'audio') {
       return (
-        <div key={index} className="mb-1">
+        <div className="mb-1">
           <audio src={attachment.url} controls className="max-w-xs" />
           <div className="text-xs text-gray-500 mt-1">
             {attachment.name} ({formatFileSize(attachment.size)})
@@ -72,7 +72,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
       // Default file attachment
       return (
         <a
-          key={index}
           href={attachment.url}
           target="_blank"
           rel="noopener noreferrer"
@@ -110,14 +109,38 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn }) => {
       >
         {message.attachments && message.attachments.length > 0 && (
           <div className="mb-2">
-            {message.attachments.map((attachment, index) => renderAttachment(attachment, index))}
+            {message.attachments.map((attachment, index) => (
+              <React.Fragment key={`${message.id}-attachment-${index}`}>
+                {renderAttachment(attachment, index)}
+              </React.Fragment>
+            ))}
           </div>
         )}
         
         {message.text && <p className="whitespace-pre-wrap">{message.text}</p>}
         
         <div className={`flex items-center justify-end mt-1 text-xs ${isOwn ? 'text-primary-200' : 'text-gray-500'}`}>
-          <span>{format(new Date(message.timestamp), 'p')}</span>
+          <span>
+            {(() => {
+              try {
+                // Check if timestamp is valid
+                if (!message.timestamp) return '';
+                
+                // Parse the timestamp correctly - handle both string and number formats
+                const date = typeof message.timestamp === 'string' 
+                  ? new Date(message.timestamp) 
+                  : new Date(Number(message.timestamp));
+                
+                // Validate the date is valid
+                if (isNaN(date.getTime())) return '';
+                
+                return format(date, 'p');
+              } catch (error) {
+                console.error('Error formatting message timestamp:', error, message);
+                return '';
+              }
+            })()}
+          </span>
           
           {isOwn && (
             <div className="ml-1 flex">

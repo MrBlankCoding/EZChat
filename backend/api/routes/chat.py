@@ -69,28 +69,42 @@ async def get_chat_history(
     cursor = messages_collection.find(query).sort("created_at", -1).limit(limit)
     messages = await cursor.to_list(length=limit)
 
-    # Convert ObjectId to string for each message
+    # Process messages
+    processed_messages = []
     for message in messages:
+        # Convert ObjectId to string
         message["_id"] = str(message["_id"])
 
+        # Handle messages from websocket which might have text in payload
+        if "payload" in message and message.get("type") == "message":
+            if "text" in message["payload"]:
+                message["text"] = message["payload"]["text"]
+
+        # Ensure message has text field
+        if "text" not in message:
+            message["text"] = ""  # Provide a default value for text
+
+        # Use the from_db method to create proper MessageResponse objects
+        processed_messages.append(MessageResponse.model_validate(message))
+
     # Mark unread messages as read
-    unread_messages = [
-        ObjectId(msg["_id"])
-        for msg in messages
-        if msg["recipient_id"] == current_user.firebase_uid and msg["status"] != "read"
+    unread_ids = [
+        ObjectId(msg.id)
+        for msg in processed_messages
+        if msg.recipient_id == current_user.firebase_uid and msg.status != "read"
     ]
 
-    if unread_messages:
+    if unread_ids:
         now = datetime.utcnow()
         await messages_collection.update_many(
-            {"_id": {"$in": unread_messages}},
+            {"_id": {"$in": unread_ids}},
             {"$set": {"status": "read", "read_at": now}},
         )
 
     # Sort messages by created_at
-    messages.sort(key=lambda x: x["created_at"])
+    processed_messages.sort(key=lambda x: x.created_at)
 
-    return messages
+    return processed_messages
 
 
 @router.get("/", response_model=List[ConversationResponse])

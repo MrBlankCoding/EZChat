@@ -9,7 +9,8 @@ export enum ContactStatus {
 }
 
 export interface Contact {
-  id: string;
+  _id: string;       // This is what the MongoDB backend sends
+  id?: string;       // This might exist in some legacy code
   user_id: string;
   contact_id: string;
   status: ContactStatus;
@@ -115,6 +116,12 @@ const useContactsStore = create<ContactsState>((set, get) => ({
     try {
       set({ isLoading: true, error: null });
       
+      if (!contactId || contactId === 'undefined') {
+        throw new Error('Invalid contact ID');
+      }
+      
+      console.log('Accepting contact with ID:', contactId);
+      
       await apiClient.put(`/contacts/${contactId}`, {
         status: ContactStatus.ACCEPTED
       });
@@ -130,6 +137,7 @@ const useContactsStore = create<ContactsState>((set, get) => ({
         error: error instanceof Error ? error.message : 'Failed to accept contact',
         isLoading: false
       });
+      throw error; // Re-throw so it can be caught by the component
     }
   },
   
@@ -137,6 +145,10 @@ const useContactsStore = create<ContactsState>((set, get) => ({
   blockContact: async (contactId: string) => {
     try {
       set({ isLoading: true, error: null });
+      
+      if (!contactId || contactId === 'undefined') {
+        throw new Error('Invalid contact ID');
+      }
       
       await apiClient.put(`/contacts/${contactId}`, {
         status: ContactStatus.BLOCKED
@@ -159,6 +171,10 @@ const useContactsStore = create<ContactsState>((set, get) => ({
   deleteContact: async (contactId: string) => {
     try {
       set({ isLoading: true, error: null });
+      
+      if (!contactId || contactId === 'undefined') {
+        throw new Error('Invalid contact ID');
+      }
       
       await apiClient.delete(`/contacts/${contactId}`);
       

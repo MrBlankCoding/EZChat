@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useChatStore } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
+import { useContactsStore } from '../stores/contactsStore';
 import { PaperAirplaneIcon, PaperClipIcon, FaceSmileIcon } from '@heroicons/react/24/outline';
 import { format } from 'date-fns';
 import websocketService from '../services/websocketService';
@@ -20,13 +21,25 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const [uploading, setUploading] = useState(false);
   
   const { user } = useAuthStore();
-  const { contacts, conversations } = useChatStore();
+  const { conversations, typingIndicators } = useChatStore();
+  const { contacts } = useContactsStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
-  const contact = contacts[contactId];
-  const conversation = conversations[contactId];
+  // Check if contacts is defined before accessing a key
+  if (!contacts || contacts.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-gray-50">
+        <p className="text-gray-500">Loading contacts...</p>
+      </div>
+    );
+  }
+  
+  // Find the contact by ID
+  const contact = contacts.find(c => c.contact_id === contactId);
+  const conversation = conversations?.[contactId];
   const messages = conversation?.messages || [];
+  const isContactTyping = typingIndicators?.[contactId] || false;
   
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -161,30 +174,41 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
         <div className="flex-shrink-0 relative">
           <img
             className="h-10 w-10 rounded-full object-cover"
-            src={contact.photoURL || 'https://via.placeholder.com/150'}
-            alt={contact.displayName}
+            src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
+            alt={contact.contact_display_name}
           />
           <div
             className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-white ${
-              contact.status === 'online'
+              contact.contact_status === 'online'
                 ? 'bg-green-500'
-                : contact.status === 'away'
+                : contact.contact_status === 'away'
                 ? 'bg-yellow-500'
                 : 'bg-gray-500'
             }`}
           ></div>
         </div>
         <div className="ml-3">
-          <h2 className="text-lg font-medium text-gray-900">{contact.displayName}</h2>
+          <h2 className="text-lg font-medium text-gray-900">{contact.contact_display_name}</h2>
           <p className="text-sm text-gray-500">
-            {contact.isTyping
+            {isContactTyping
               ? 'Typing...'
-              : contact.status === 'online'
+              : contact.contact_status === 'online'
               ? 'Online'
-              : contact.status === 'away'
+              : contact.contact_status === 'away'
               ? 'Away'
-              : contact.lastSeen
-              ? `Last seen ${format(new Date(contact.lastSeen), 'PPp')}`
+              : contact.updated_at
+              ? (() => {
+                  try {
+                    // Parse the date safely
+                    const date = new Date(contact.updated_at);
+                    // Check if the date is valid
+                    if (isNaN(date.getTime())) return 'Offline';
+                    return `Last seen ${format(date, 'PPp')}`;
+                  } catch (error) {
+                    console.error('Error formatting contact last seen:', error);
+                    return 'Offline';
+                  }
+                })()
               : 'Offline'}
           </p>
         </div>

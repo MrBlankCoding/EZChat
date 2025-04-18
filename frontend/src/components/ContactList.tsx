@@ -145,7 +145,24 @@ const ContactList = () => {
                           <p className="text-sm font-medium text-gray-900 truncate">{contact.displayName}</p>
                           {lastMessage && (
                             <p className="text-xs text-gray-500">
-                              {format(new Date(lastMessage.timestamp), 'h:mm a')}
+                              {(() => {
+                                try {
+                                  // Check if timestamp is a valid date value
+                                  if (!lastMessage.timestamp) return '';
+                                  // Parse the timestamp correctly - handle both string and number formats
+                                  const date = typeof lastMessage.timestamp === 'string' 
+                                    ? new Date(lastMessage.timestamp) 
+                                    : new Date(Number(lastMessage.timestamp));
+                                  
+                                  // Validate that the date is valid before formatting
+                                  if (isNaN(date.getTime())) return '';
+                                  
+                                  return format(date, 'h:mm a');
+                                } catch (error) {
+                                  console.error('Error formatting date:', error, lastMessage);
+                                  return '';
+                                }
+                              })()}
                             </p>
                           )}
                         </div>

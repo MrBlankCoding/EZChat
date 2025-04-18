@@ -61,7 +61,22 @@ class MessageResponse(MessageBase):
     delivered_at: Optional[datetime] = None
     read_at: Optional[datetime] = None
 
+    # Add this to ensure text is always included in the response
+    text: str
+
     model_config = {"populate_by_name": True, "from_attributes": True}
+
+    # Custom method to transform database message to response
+    @classmethod
+    def from_db(cls, db_message):
+        # If the message is from WebSocket and has a special format
+        if "payload" in db_message and db_message.get("type") == "message":
+            payload = db_message["payload"]
+            # Extract text from the payload
+            if "text" in payload:
+                db_message["text"] = payload["text"]
+
+        return cls(**db_message)
 
 
 class MessageUpdate(BaseModel):

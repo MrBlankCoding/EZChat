@@ -65,14 +65,12 @@ check_dependencies() {
 # Check if backend virtual environment exists
 check_backend_venv() {
   echo "Checking backend virtual environment..."
-  cd backend
   
   # Check if either venv or .venv directory exists
   if [ ! -d "venv" ] && [ ! -d ".venv" ]; then
     echo "❌ Python virtual environment not found."
     echo "Please set up a virtual environment and install dependencies with:"
     echo "cd backend && python -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
-    cd ..
     exit 1
   fi
   
@@ -84,7 +82,6 @@ check_backend_venv() {
   fi
   
   echo "✅ Found virtual environment in: $VENV_DIR"
-  cd ..
 }
 
 # Check if frontend dependencies are installed
@@ -110,10 +107,10 @@ run_backend() {
   cd backend
   
   # Determine which venv directory to use
-  if [ -d "venv" ]; then
-    VENV_DIR="venv"
+  if [ -d "../venv" ]; then
+    VENV_DIR="../venv"
   else
-    VENV_DIR=".venv"
+    VENV_DIR="../.venv"
   fi
   
   # Activate the virtual environment
