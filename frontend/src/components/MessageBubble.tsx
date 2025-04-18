@@ -273,12 +273,13 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
   return (
     <div className={`flex mb-3 animate-slide-up ${isOwn ? 'justify-end' : 'justify-start'}`} ref={messageRef}>
       <div className="relative group">
+        {/* Profile photo for contact's messages only */}
         {!isOwn && (
-          <div className="absolute -left-10 -top-1">
+          <div className="absolute -left-12 -top-1">
             <img 
               src={contact?.contact_avatar_url || 'https://via.placeholder.com/40'} 
               alt={senderName}
-              className="h-8 w-8 rounded-full object-cover"
+              className="h-8 w-8 rounded-full object-cover shadow-sm"
             />
           </div>
         )}

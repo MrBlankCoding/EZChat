@@ -4,28 +4,29 @@ import websocketService from '../services/websocketService';
 
 /**
  * Hook to manage WebSocket connection
- * Automatically connects when the user is authenticated and
- * disconnects when the user logs out
+ * Automatically connects when the user is authenticated
+ * Avoids creating duplicate connections
  */
 export function useWebSocketConnection() {
   const { user } = useAuthStore();
   
   useEffect(() => {
-    // Connect to WebSocket when the user is authenticated
+    // Only connect when the user is authenticated
     if (user) {
-      console.log('User authenticated, connecting to WebSocket');
-      websocketService.connect();
-    } else {
-      // Disconnect when the user logs out
-      console.log('User not authenticated, disconnecting WebSocket');
-      websocketService.disconnect();
+      console.log('User authenticated in hook, checking WebSocket connection');
+      // Check current connection state before attempting to connect
+      const status = websocketService.getConnectionState();
+      
+      if (status.state !== 'connected' && status.state !== 'connecting') {
+        console.log('WebSocket not connected, initiating connection from hook');
+        websocketService.connect().catch(error => {
+          console.error('Failed to connect WebSocket from hook:', error);
+        });
+      }
     }
     
-    // Cleanup on unmount
-    return () => {
-      console.log('Component unmounting, cleaning up WebSocket connection');
-      websocketService.disconnect();
-    };
+    // No disconnect on unmount - connections are managed globally by AuthProvider
+    // This prevents connection/disconnection cycles when navigating between pages
   }, [user]);
 }
 

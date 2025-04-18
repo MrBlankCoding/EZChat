@@ -31,7 +31,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const [uploading, setUploading] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
-  const [observedMessages, setObservedMessages] = useState<Set<string>>(new Set());
+  const observedMessagesRef = useRef<Set<string>>(new Set());
   
   const { user } = useAuthStore();
   const { conversations, typingIndicators } = useChatStore();
@@ -68,16 +68,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   
   // Handle when a message becomes visible
   const handleMessageInView = useCallback((messageId: string, senderId: string) => {
-    if (senderId !== user?.id && !observedMessages.has(messageId)) {
+    if (senderId !== user?.id && !observedMessagesRef.current.has(messageId)) {
       websocketService.sendReadReceipt(contactId, messageId);
-      setObservedMessages(prev => new Set(prev).add(messageId));
+      observedMessagesRef.current.add(messageId);
     }
-  }, [contactId, user?.id, observedMessages]);
+  }, [contactId, user?.id]);
   
   // Setup IntersectionObserver for read receipts
   useEffect(() => {
     // Reset observed messages when contact changes
-    setObservedMessages(new Set());
+    observedMessagesRef.current = new Set();
     
     const observer = new IntersectionObserver(
       (entries) => {
@@ -114,7 +114,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     messageRefs.current.forEach((node) => {
       observer.observe(node);
     });
-  }, [messages, messageObserverRef.current]);
+  }, [messages]);
   
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -366,7 +366,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
             </div>
           </div>
         ) : (
-          <div className="space-y-1">
+          <div className="space-y-1 pl-16 pr-4">
             {messages.map((msg) => (
               <div 
                 key={msg.id}

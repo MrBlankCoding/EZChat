@@ -51,11 +51,28 @@ class WebSocketService {
   private maxReconnectAttempts = 5;
   private reconnectDelay = 2000;
   private errorHandlers: Array<(error: any) => void> = [];
+  private connectingPromise: Promise<void> | null = null;
+  private lastConnectAttempt = 0;
+  private connectionAttemptDebounceMs = 5000; // Prevent multiple connect calls within 5 seconds
   
   async connect() {
-    if (this.socket?.readyState === WebSocket.OPEN || this.connectionState === 'connecting') {
-      console.log('[WS] Already connected or connecting, skipping connection');
-      return;
+    // Debounce connect attempts to prevent multiple simultaneous connections
+    const now = Date.now();
+    if (now - this.lastConnectAttempt < this.connectionAttemptDebounceMs) {
+      console.log('[WS] Connect attempt debounced, another attempt was made recently');
+      return this.connectingPromise;
+    }
+    
+    this.lastConnectAttempt = now;
+    
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      console.log('[WS] Already connected, skipping connection');
+      return Promise.resolve();
+    }
+    
+    if (this.connectionState === 'connecting' && this.connectingPromise) {
+      console.log('[WS] Connection already in progress, returning existing promise');
+      return this.connectingPromise;
     }
     
     // Reset any previous reconnect attempts if this is a fresh connection
@@ -66,83 +83,119 @@ class WebSocketService {
     this.connectionState = 'connecting';
     console.log('[WS] Initiating connection...');
     
-    try {
-      const { user } = useAuthStore.getState();
-      if (!user) {
-        console.error('[WS] Cannot connect: User not authenticated');
-        this.connectionState = 'disconnected';
-        return;
-      }
-
-      const auth = (await import('./firebaseConfig')).auth;
-      
-      // Try to refresh the token to ensure it's valid
+    // Create a new connection promise
+    this.connectingPromise = new Promise<void>(async (resolve, reject) => {
       try {
-        await auth.currentUser?.getIdToken(true); // Force refresh token
-      } catch (refreshError) {
-        console.warn('[WS] Token refresh failed:', refreshError);
-        // Continue with the existing token
-      }
-      
-      const token = await auth.currentUser?.getIdToken();
-      
-      if (!token) {
-        console.error('[WS] Cannot connect: No authentication token available');
-        this.connectionState = 'disconnected';
-        return;
-      }
-      
-      // Log connection details to help debugging
-      console.log('[WS] Connecting with user:', user.id);
-      
-      const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/ws'}?token=${token}`;
-      console.log('[WS] Using WebSocket URL:', wsUrl.replace(/token=.*$/, 'token=***'));
-      
-      // Close any existing connection properly
-      if (this.socket) {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          console.error('[WS] Cannot connect: User not authenticated');
+          this.connectionState = 'disconnected';
+          this.connectingPromise = null;
+          reject(new Error('User not authenticated'));
+          return;
+        }
+
+        const auth = (await import('./firebaseConfig')).auth;
+        
+        // Try to refresh the token to ensure it's valid
         try {
-          this.socket.onclose = null; // Prevent reconnect trigger on intentional close
-          this.socket.close();
-        } catch (err) {
-          console.warn('[WS] Error closing existing socket:', err);
+          await auth.currentUser?.getIdToken(true); // Force refresh token
+        } catch (refreshError) {
+          console.warn('[WS] Token refresh failed:', refreshError);
+          // Continue with the existing token
         }
-        this.socket = null;
-      }
-      
-      // Create and configure new WebSocket
-      this.socket = new WebSocket(wsUrl);
-      
-      // Set a connection timeout
-      const connectionTimeout = setTimeout(() => {
-        if (this.connectionState === 'connecting') {
-          console.error('[WS] Connection timeout');
-          if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
+        
+        const token = await auth.currentUser?.getIdToken();
+        
+        if (!token) {
+          console.error('[WS] Cannot connect: No authentication token available');
+          this.connectionState = 'disconnected';
+          this.connectingPromise = null;
+          reject(new Error('No authentication token available'));
+          return;
+        }
+        
+        // Log connection details to help debugging
+        console.log('[WS] Connecting with user:', user.id);
+        
+        const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/ws'}?token=${token}`;
+        console.log('[WS] Using WebSocket URL:', wsUrl.replace(/token=.*$/, 'token=***'));
+        
+        // Close any existing connection properly
+        if (this.socket) {
+          try {
+            this.socket.onclose = null; // Prevent reconnect trigger on intentional close
             this.socket.close();
-            this.connectionState = 'disconnected';
-            this.handleClose({ code: 1006, reason: 'Connection timeout', wasClean: false } as CloseEvent);
+          } catch (err) {
+            console.warn('[WS] Error closing existing socket:', err);
           }
+          this.socket = null;
         }
-      }, 10000); // 10 second timeout
-      
-      // Set up event handlers
-      this.socket.onopen = (event) => {
-        clearTimeout(connectionTimeout);
-        this.handleOpen();
-      };
-      
-      this.socket.onmessage = this.handleMessage.bind(this);
-      this.socket.onclose = this.handleClose.bind(this);
-      this.socket.onerror = this.handleError.bind(this);
-    } catch (error) {
-      console.error('[WS] Error connecting to WebSocket:', error);
-      this.connectionState = 'disconnected';
-      this.handleClose({ code: 1006, reason: `Connection setup failed: ${error}`, wasClean: false } as CloseEvent);
-    }
+        
+        // Create and configure new WebSocket
+        this.socket = new WebSocket(wsUrl);
+        
+        // Set a connection timeout
+        const connectionTimeout = setTimeout(() => {
+          if (this.connectionState === 'connecting') {
+            console.error('[WS] Connection timeout');
+            if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
+              this.socket.close();
+              this.connectionState = 'disconnected';
+              this.connectingPromise = null;
+              this.handleClose({ code: 1006, reason: 'Connection timeout', wasClean: false } as CloseEvent);
+              reject(new Error('Connection timeout'));
+            }
+          }
+        }, 10000); // 10 second timeout
+        
+        // Set up event handlers
+        this.socket.onopen = (event) => {
+          clearTimeout(connectionTimeout);
+          this.handleOpen();
+          resolve();
+        };
+        
+        this.socket.onmessage = this.handleMessage.bind(this);
+        
+        this.socket.onclose = (event) => {
+          clearTimeout(connectionTimeout);
+          this.handleClose(event);
+          if (this.connectionState === 'connecting') {
+            reject(new Error(`WebSocket closed during connection: ${event.code}`));
+          }
+        };
+        
+        this.socket.onerror = (event) => {
+          clearTimeout(connectionTimeout);
+          this.handleError(event);
+          if (this.connectionState === 'connecting') {
+            reject(new Error('WebSocket connection error'));
+          }
+        };
+      } catch (error) {
+        console.error('[WS] Error connecting to WebSocket:', error);
+        this.connectionState = 'disconnected';
+        this.connectingPromise = null;
+        this.handleClose({ code: 1006, reason: `Connection setup failed: ${error}`, wasClean: false } as CloseEvent);
+        reject(error);
+      }
+    });
+    
+    return this.connectingPromise.finally(() => {
+      this.connectingPromise = null;
+    });
   }
   
   disconnect() {
     if (this.socket) {
-      this.socket.close();
+      console.log('[WS] Disconnecting WebSocket...');
+      try {
+        this.socket.onclose = null; // Prevent reconnect on intentional close
+        this.socket.close();
+      } catch (e) {
+        console.warn('[WS] Error during disconnect:', e);
+      }
       this.socket = null;
     }
     
@@ -159,6 +212,7 @@ class WebSocketService {
     }
     
     this.reconnectAttempts = 0;
+    this.connectingPromise = null;
   }
   
   private handleOpen() {
@@ -427,14 +481,23 @@ class WebSocketService {
       return;
     }
     
+    // Don't reconnect if we're already trying to reconnect
+    if (this.reconnectTimer || this.connectingPromise) {
+      console.log('[WS] Reconnect already in progress, skipping additional attempt');
+      return;
+    }
+    
     // Implement exponential backoff for reconnect
     const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts);
     console.log(`[WS] Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`);
     
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       this.reconnectAttempts++;
       console.log(`[WS] Reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
-      this.connect();
+      this.connect().catch(err => {
+        console.error('[WS] Reconnect attempt failed:', err);
+      });
     }, delay);
   }
   

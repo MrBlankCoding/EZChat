@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import { useAuthStore } from '../stores/authStore';
@@ -27,54 +27,33 @@ const ChatPage = () => {
   }, [contactId, activeConversationId, setActiveConversation]);
   
   // Function to check and update WebSocket connection status
-  const checkWsConnection = useCallback(async () => {
+  const checkWsConnection = async () => {
     if (user) {
       try {
-        // Force reconnect if there's an issue
-        await websocketService.testConnection();
         // Get updated status
         const status = websocketService.getConnectionState();
         setWsStatus(status);
-        console.log('[ChatPage] WebSocket Status:', status);
-        
-        // If we still have connection issues, try more drastic measures
-        if (status.state !== 'connected' || status.readyState !== 'OPEN') {
-          console.log('[ChatPage] Connection still problematic, forcing full reconnect');
-          websocketService.disconnect();
-          // Small delay to ensure complete disconnect
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          await websocketService.connect();
-          
-          // Get status after forced reconnect
-          const newStatus = websocketService.getConnectionState();
-          setWsStatus(newStatus);
-          console.log('[ChatPage] WebSocket Status after forced reconnect:', newStatus);
-        }
       } catch (error) {
         console.error('[ChatPage] WebSocket connection check failed:', error);
       }
     }
-  }, [user]);
+  };
   
-  // Connect to WebSocket when component mounts and periodically check connection
+  // Periodically check WebSocket connection status
   useEffect(() => {
     if (user) {
-      // Initial connection
-      websocketService.connect();
-      
       // Check connection immediately
       checkWsConnection();
       
       // Set up periodic check (every 30 seconds)
       const intervalId = setInterval(checkWsConnection, 30000);
       
-      // Cleanup WebSocket connection and interval when component unmounts
+      // Cleanup interval when component unmounts
       return () => {
         clearInterval(intervalId);
-        websocketService.disconnect();
       };
     }
-  }, [user, checkWsConnection]);
+  }, [user]);
   
   // Fetch contacts and messages on initial load
   useEffect(() => {
@@ -105,7 +84,10 @@ const ChatPage = () => {
         <div className="bg-yellow-100 dark:bg-yellow-900 p-2 text-center text-sm">
           <span className="font-medium">WebSocket disconnected!</span> Messages won't be delivered in real-time. 
           <button 
-            onClick={checkWsConnection}
+            onClick={() => {
+              websocketService.connect();
+              setTimeout(checkWsConnection, 1000);
+            }}
             className="ml-2 underline"
           >
             Try reconnect

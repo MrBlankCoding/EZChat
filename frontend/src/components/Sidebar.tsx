@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
-import ThemeToggle from './ThemeToggle';
+import NotificationBadge from './NotificationBadge';
+import useUnreadNotifications from '../hooks/useUnreadNotifications';
+import { useChatStore } from '../stores/chatStore';
 import {
   ChatBubbleLeftRightIcon,
   Cog6ToothIcon,
@@ -14,6 +16,16 @@ const Sidebar = () => {
   const { user } = useAuthStore();
   const location = useLocation();
   const [isOpen, setIsOpen] = useState(true);
+  const { conversations } = useChatStore();
+  const totalUnreadCount = useUnreadNotifications();
+
+  // Calculate unread chats (only for chat section)
+  const unreadChatsCount = Object.values(conversations).reduce((count, conversation) => {
+    if (conversation.isUnread) {
+      return count + 1;
+    }
+    return count;
+  }, 0);
 
   const toggleSidebar = () => {
     setIsOpen(!isOpen);
@@ -55,6 +67,11 @@ const Sidebar = () => {
               ? 'bg-yellow-500'
               : 'bg-gray-500'
           }`}></div>
+          
+          {/* Show notification badge if there are any unread notifications */}
+          {totalUnreadCount > 0 && !isOpen && (
+            <NotificationBadge count={totalUnreadCount} />
+          )}
         </div>
         {isOpen && (
           <div className="ml-3 overflow-hidden animate-fade-in">
@@ -73,10 +90,15 @@ const Sidebar = () => {
               isActive 
                 ? 'bg-primary-50 dark:bg-dark-800 text-primary-600 dark:text-secondary-400' 
                 : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-dark-800 hover:text-primary-600 dark:hover:text-secondary-400'
-            } group flex items-center px-2 py-2 text-sm font-medium rounded-xl transition-all duration-200`
+            } group flex items-center px-2 py-2 text-sm font-medium rounded-xl transition-all duration-200 relative`
           }
         >
-          <ChatBubbleLeftRightIcon className="mr-3 h-6 w-6 flex-shrink-0" />
+          <div className="relative">
+            <ChatBubbleLeftRightIcon className="mr-3 h-6 w-6 flex-shrink-0" />
+            {unreadChatsCount > 0 && (
+              <NotificationBadge count={unreadChatsCount} />
+            )}
+          </div>
           {isOpen && <span className="flex-1 animate-fade-in">Chats</span>}
         </NavLink>
 
@@ -109,15 +131,14 @@ const Sidebar = () => {
         </NavLink>
       </nav>
 
-      {/* Footer with theme toggle */}
+      {/* Footer with version */}
       <div className="flex-shrink-0 p-4 border-t border-gray-200 dark:border-dark-700">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-center">
           {isOpen && (
             <div className="text-xs text-gray-400 dark:text-gray-500 animate-fade-in">
               <span>EZChat v0.1.0</span>
             </div>
           )}
-          <ThemeToggle />
         </div>
       </div>
     </div>

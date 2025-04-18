@@ -9,9 +9,12 @@ import { storage } from '../services/firebaseConfig';
 import Sidebar from '../components/Sidebar';
 import notificationService from '../services/notificationService';
 import { BellIcon, BellSlashIcon } from '@heroicons/react/24/outline';
+import ThemeToggle from '../components/ThemeToggle';
+import { useThemeStore } from '../stores/themeStore';
 
 const SettingsPage = () => {
   const { user, setUser, logout } = useAuthStore();
+  const { mode } = useThemeStore();
   const navigate = useNavigate();
   
   const [displayName, setDisplayName] = useState('');
@@ -175,13 +178,13 @@ const SettingsPage = () => {
     <div className="h-full flex">
       <Sidebar />
       
-      <div className="flex-1 flex flex-col overflow-hidden bg-gray-50">
+      <div className="flex-1 flex flex-col overflow-hidden bg-gray-50 dark:bg-dark-900">
         <div className="max-w-4xl mx-auto w-full px-4 py-8">
           <div className="md:grid md:grid-cols-3 md:gap-6">
             <div className="md:col-span-1">
               <div className="px-4 sm:px-0">
-                <h3 className="text-lg font-medium leading-6 text-gray-900">Profile</h3>
-                <p className="mt-1 text-sm text-gray-600">
+                <h3 className="text-lg font-medium leading-6 text-gray-900 dark:text-white">Profile</h3>
+                <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
                   Update your profile information and preferences.
                 </p>
               </div>
@@ -287,23 +290,56 @@ const SettingsPage = () => {
             </div>
           </div>
           
+          {/* Appearance Section */}
+          <div className="mt-10 md:grid md:grid-cols-3 md:gap-6">
+            <div className="md:col-span-1">
+              <div className="px-4 sm:px-0">
+                <h3 className="text-lg font-medium leading-6 text-gray-900 dark:text-white">Appearance</h3>
+                <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                  Customize how EZChat looks and feels.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 md:mt-0 md:col-span-2">
+              <div className="shadow sm:rounded-md sm:overflow-hidden">
+                <div className="px-4 py-5 bg-white dark:bg-dark-800 space-y-6 sm:p-6">
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-900 dark:text-white">Theme</h4>
+                    <div className="mt-2 flex items-center justify-between">
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        Switch between light and dark mode.
+                      </p>
+                      
+                      <div className="flex items-center space-x-3">
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          {mode === 'dark' ? 'Dark Mode' : 'Light Mode'}
+                        </span>
+                        <ThemeToggle />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
           {/* Notifications Section */}
           <div className="mt-10 md:grid md:grid-cols-3 md:gap-6">
             <div className="md:col-span-1">
               <div className="px-4 sm:px-0">
-                <h3 className="text-lg font-medium leading-6 text-gray-900">Notifications</h3>
-                <p className="mt-1 text-sm text-gray-600">
+                <h3 className="text-lg font-medium leading-6 text-gray-900 dark:text-white">Notifications</h3>
+                <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
                   Manage how you receive notifications.
                 </p>
               </div>
             </div>
             <div className="mt-5 md:mt-0 md:col-span-2">
               <div className="shadow sm:rounded-md sm:overflow-hidden">
-                <div className="px-4 py-5 bg-white space-y-6 sm:p-6">
+                <div className="px-4 py-5 bg-white dark:bg-dark-800 space-y-6 sm:p-6">
                   <div>
-                    <h4 className="text-sm font-medium text-gray-900">Push Notifications</h4>
+                    <h4 className="text-sm font-medium text-gray-900 dark:text-white">Push Notifications</h4>
                     <div className="mt-2 flex items-center justify-between">
-                      <p className="text-sm text-gray-500">
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
                         Receive notifications when you get new messages and are not actively using the app.
                       </p>
                       

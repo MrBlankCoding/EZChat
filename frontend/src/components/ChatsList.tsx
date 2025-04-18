@@ -125,13 +125,6 @@ const ChatsList = () => {
             >
               <PlusIcon className="h-5 w-5" />
             </button>
-            <button
-              onClick={() => navigate('/contacts')}
-              className="p-1.5 text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-secondary-400 rounded-full bg-gray-100 dark:bg-dark-800 hover:bg-gray-200 dark:hover:bg-dark-700 transition-colors"
-              title="Go to Contacts"
-            >
-              <UserPlusIcon className="h-5 w-5" />
-            </button>
           </div>
         </div>
 

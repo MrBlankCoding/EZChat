@@ -22,16 +22,43 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   // Connect/disconnect WebSocket based on auth state
   useEffect(() => {
+    let wsCheckInterval: NodeJS.Timeout | null = null;
+    
     const connectWebSocket = async () => {
       if (isAuthenticated && user) {
-        // Connect WebSocket
-        await websocketService.connect();
+        console.log('[AuthProvider] User authenticated, connecting WebSocket...');
+        
+        // Check if already connected before connecting
+        const status = websocketService.getConnectionState();
+        if (status.state !== 'connected') {
+          await websocketService.connect();
+        }
+        
+        // Set up a connection health check every 60 seconds
+        wsCheckInterval = setInterval(async () => {
+          try {
+            const isConnected = await websocketService.testConnection();
+            if (!isConnected) {
+              console.log('[AuthProvider] WebSocket health check failed, reconnecting...');
+              await websocketService.connect();
+            }
+          } catch (error) {
+            console.error('[AuthProvider] WebSocket health check error:', error);
+          }
+        }, 60000);
         
         // Initialize notifications
         initializeNotifications();
       } else if (!isLoading && initialized) {
-        // Disconnect WebSocket
+        // Disconnect WebSocket when logged out
+        console.log('[AuthProvider] User not authenticated, disconnecting WebSocket');
         websocketService.disconnect();
+        
+        // Clear interval if it exists
+        if (wsCheckInterval) {
+          clearInterval(wsCheckInterval);
+          wsCheckInterval = null;
+        }
       }
     };
 
@@ -39,7 +66,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
     // Cleanup function
     return () => {
-      websocketService.disconnect();
+      if (wsCheckInterval) {
+        clearInterval(wsCheckInterval);
+      }
+      // Don't disconnect WebSocket on component unmount - only on logout
     };
   }, [isAuthenticated, user, isLoading, initialized]);
   
