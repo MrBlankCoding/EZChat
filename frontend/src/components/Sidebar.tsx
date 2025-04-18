@@ -32,9 +32,29 @@ const Sidebar = () => {
   const toggleSidebar = () => {
     setIsOpen(!isOpen);
   };
+  
+  // Auto-collapse on small screens
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 640) { // sm breakpoint in Tailwind is 640px
+        setIsOpen(false);
+      } else {
+        setIsOpen(true);
+      }
+    };
+    
+    // Initial check
+    handleResize();
+    
+    // Add event listener
+    window.addEventListener('resize', handleResize);
+    
+    // Cleanup
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   return (
-    <div className={`bg-white dark:bg-dark-900 border-r border-gray-200 dark:border-dark-700 ${isOpen ? 'w-64' : 'w-16'} transition-all duration-300 flex flex-col shadow-soft h-full`}>
+    <div className={`bg-white dark:bg-dark-900 border-r border-gray-200 dark:border-dark-700 ${isOpen ? 'w-64' : 'w-16'} transition-all duration-300 flex flex-col shadow-soft h-full z-10`}>
       {/* Sidebar header with toggle button */}
       <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-dark-700">
         {isOpen && (
@@ -45,6 +65,7 @@ const Sidebar = () => {
         <button
           className="p-1.5 rounded-full bg-gray-100 hover:bg-gray-200 dark:bg-dark-800 dark:hover:bg-dark-700 text-gray-500 dark:text-gray-300 focus:outline-none transition-colors"
           onClick={toggleSidebar}
+          aria-label={isOpen ? "Collapse sidebar" : "Expand sidebar"}
         >
           {isOpen ? (
             <ChevronLeftIcon className="h-4 w-4" />
@@ -94,7 +115,7 @@ const Sidebar = () => {
           }
         >
           <div className="relative">
-            <ChatBubbleLeftRightIcon className="mr-3 h-6 w-6 flex-shrink-0" />
+            <ChatBubbleLeftRightIcon className={`h-6 w-6 flex-shrink-0 ${isOpen ? 'mr-3' : 'mx-auto'}`} />
             {unreadChatsCount > 0 && (
               <NotificationBadge count={unreadChatsCount} />
             )}
@@ -112,7 +133,7 @@ const Sidebar = () => {
             } group flex items-center px-2 py-2 text-sm font-medium rounded-xl transition-all duration-200`
           }
         >
-          <UserGroupIcon className="mr-3 h-6 w-6 flex-shrink-0" />
+          <UserGroupIcon className={`h-6 w-6 flex-shrink-0 ${isOpen ? 'mr-3' : 'mx-auto'}`} />
           {isOpen && <span className="flex-1 animate-fade-in">Contacts</span>}
         </NavLink>
 
@@ -126,7 +147,7 @@ const Sidebar = () => {
             } group flex items-center px-2 py-2 text-sm font-medium rounded-xl transition-all duration-200`
           }
         >
-          <Cog6ToothIcon className="mr-3 h-6 w-6 flex-shrink-0" />
+          <Cog6ToothIcon className={`h-6 w-6 flex-shrink-0 ${isOpen ? 'mr-3' : 'mx-auto'}`} />
           {isOpen && <span className="flex-1 animate-fade-in">Settings</span>}
         </NavLink>
       </nav>

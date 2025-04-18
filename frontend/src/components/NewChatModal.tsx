@@ -7,9 +7,10 @@ import { generateAvatarUrl } from '../utils/avatarUtils';
 
 interface NewChatModalProps {
   onClose: () => void;
+  onSelectContact?: (contactId: string) => void;
 }
 
-const NewChatModal = ({ onClose }: NewChatModalProps) => {
+const NewChatModal = ({ onClose, onSelectContact }: NewChatModalProps) => {
   const { contacts } = useContactsStore();
   const { setActiveConversation } = useChatStore();
   const navigate = useNavigate();
@@ -40,9 +41,15 @@ const NewChatModal = ({ onClose }: NewChatModalProps) => {
   // Start a new chat with the selected contact
   const handleStartChat = () => {
     if (selectedContactId) {
-      setActiveConversation(selectedContactId);
-      navigate(`/chat/${selectedContactId}`);
-      onClose();
+      // If onSelectContact callback exists, use it
+      if (onSelectContact) {
+        onSelectContact(selectedContactId);
+      } else {
+        // Otherwise use the old behavior
+        setActiveConversation(selectedContactId);
+        navigate(`/chat/${selectedContactId}`);
+        onClose();
+      }
     }
   };
 

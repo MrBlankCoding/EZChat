@@ -11,6 +11,10 @@ class TimezoneService {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   // Add verification interval
   private verificationInterval: ReturnType<typeof setTimeout> | null = null;
+  // Track the last time we verified to limit frequency
+  private lastVerificationTime: number = 0;
+  // Minimum time between verifications (1 hour in milliseconds)
+  private readonly MIN_VERIFICATION_INTERVAL = 60 * 60 * 1000; // 1 hour
   
   /**
    * Initialize the service by setting up listeners and sending the initial timezone
@@ -36,10 +40,10 @@ class TimezoneService {
       clearInterval(this.verificationInterval);
     }
     
-    // Check timezone every 10 minutes without updating it
+    // Check timezone every hour without updating it
     this.verificationInterval = setInterval(() => {
       this.verifyUserTimezone();
-    }, 10 * 60 * 1000); // 10 minutes
+    }, this.MIN_VERIFICATION_INTERVAL); // 1 hour
   }
   
   /**
@@ -47,6 +51,10 @@ class TimezoneService {
    */
   verifyUserTimezone(): void {
     const timezone = getUserTimezone();
+    
+    // Update last verification time
+    this.lastVerificationTime = Date.now();
+    
     websocketService.sendUserTimezone(timezone, true);
   }
   
@@ -64,6 +72,9 @@ class TimezoneService {
     
     // Update last sent timezone
     this.lastSentTimezone = timezone;
+    
+    // Update last verification time
+    this.lastVerificationTime = Date.now();
     
     // Send timezone through websocket
     websocketService.sendUserTimezone(timezone);
@@ -97,11 +108,15 @@ class TimezoneService {
     }
     
     // This is a simple check that runs when the tab becomes visible again
-    // More sophisticated timezone change detection would require additional logic
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
-        // Use debounced version to prevent multiple rapid updates
-        this.debouncedSendTimezone();
+        // Only check for timezone changes if enough time has passed
+        const timeElapsed = Date.now() - this.lastVerificationTime;
+        
+        if (timeElapsed >= this.MIN_VERIFICATION_INTERVAL / 4) { // Check at most once every 15 minutes
+          // Use debounced version to prevent multiple rapid updates
+          this.debouncedSendTimezone();
+        }
       }
     });
   }

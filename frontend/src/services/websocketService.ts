@@ -1055,11 +1055,14 @@ class WebSocketService {
    */
   sendUserTimezone(timezone: string, verifyOnly: boolean = false) {
     if (!this.isConnected()) {
-      console.warn('[WS] Cannot send timezone, not connected');
-      // Queue the timezone send for when we connect
-      this.connect().then(() => this.sendUserTimezone(timezone, verifyOnly)).catch(err => {
-        console.error('[WS] Failed to connect to send timezone:', err);
-      });
+      // Only attempt to connect if we're actually updating the timezone (not just verifying)
+      if (!verifyOnly) {
+        console.warn('[WS] Cannot send timezone, not connected');
+        // Queue the timezone send for when we connect
+        this.connect().then(() => this.sendUserTimezone(timezone, verifyOnly)).catch(err => {
+          console.error('[WS] Failed to connect to send timezone:', err);
+        });
+      }
       return;
     }
     
@@ -1078,7 +1081,13 @@ class WebSocketService {
       };
       
       this.send(message);
-      console.log(`[WS] Sent timezone ${verifyOnly ? 'verification' : 'update'}: ${timezone}`);
+      
+      // Only log at debug level to reduce console spam
+      if (verifyOnly) {
+        console.debug(`[WS] Sent timezone verification for: ${timezone}`);
+      } else {
+        console.log(`[WS] Sent timezone update: ${timezone}`);
+      }
     } catch (error) {
       console.error('[WS] Error sending timezone:', error);
     }

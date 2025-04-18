@@ -320,10 +320,6 @@ class ConnectionManager:
             debug_log(f"Timezone unchanged for user {user_id}: {timezone}")
             return
 
-        # Update in-memory cache
-        self.user_timezones[user_id] = timezone
-        logger.info(f"Updated timezone for user {user_id}: {timezone}")
-
         try:
             async with db_semaphore:
                 users_collection = get_users_collection()
@@ -339,11 +335,17 @@ class ConnectionManager:
                     )
                     return
 
+                # Update in-memory cache
+                self.user_timezones[user_id] = timezone
+
                 # Update the database with the new timezone
                 await users_collection.update_one(
                     {"_id": user_id},
                     {"$set": {"timezone": timezone, "updated_at": datetime.utcnow()}},
                 )
+
+                # Only log at INFO level when we've actually updated the timezone in the database
+                logger.info(f"Updated timezone for user {user_id}: {timezone}")
         except Exception as e:
             logger.error(f"Error storing timezone in database: {e}")
 
