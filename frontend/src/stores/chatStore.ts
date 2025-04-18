@@ -17,6 +17,8 @@ export interface Conversation {
   contactId: string;
   messages: Message[];
   lastReadMessageId?: string;
+  isPinned?: boolean;
+  isUnread?: boolean;
 }
 
 interface ChatState {
@@ -35,6 +37,10 @@ interface ChatState {
   updateContactStatus: (userId: string, status: string) => void;
   updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read') => void;
   clearError: () => void;
+  
+  pinConversation: (contactId: string, isPinned: boolean) => Promise<void>;
+  markConversationAsUnread: (contactId: string, isUnread: boolean) => Promise<void>;
+  deleteConversation: (contactId: string) => Promise<void>;
 }
 
 const useChatStore = create<ChatState>((set, get) => ({
@@ -48,14 +54,16 @@ const useChatStore = create<ChatState>((set, get) => ({
     set({ activeConversationId: contactId });
     
     const { conversations } = get();
-    if (!conversations[contactId]) {
-      set({
-        conversations: {
-          ...conversations,
-          [contactId]: { contactId, messages: [] }
-        }
-      });
-      
+    
+    // Only fetch messages for this contact if they don't exist already,
+    // but don't create an empty conversation entry
+    if (conversations[contactId]) {
+      // If we already have a conversation, mark it as read if unread
+      if (conversations[contactId]?.isUnread) {
+        get().markConversationAsUnread(contactId, false);
+      }
+    } else {
+      // Only fetch messages if there's an existing conversation
       get().fetchMessagesForContact(contactId);
     }
   },
@@ -81,20 +89,27 @@ const useChatStore = create<ChatState>((set, get) => ({
         attachments: message.attachments || []
       }));
       
-      const { conversations } = get();
-      const existingConversation = conversations[contactId] || {};
-      
-      set({
-        conversations: {
-          ...conversations,
-          [contactId]: {
-            ...existingConversation,
-            contactId,
-            messages
-          }
-        },
-        isLoading: false
-      });
+      // Only create/update a conversation if there are messages
+      if (messages.length > 0) {
+        const { conversations } = get();
+        const existingConversation = conversations[contactId] || {};
+        
+        set({
+          conversations: {
+            ...conversations,
+            [contactId]: {
+              ...existingConversation,
+              contactId,
+              messages,
+              isPinned: existingConversation.isPinned || false,
+              isUnread: existingConversation.isUnread || false
+            }
+          },
+          isLoading: false
+        });
+      } else {
+        set({ isLoading: false });
+      }
     } catch (error) {
       set({ 
         error: error instanceof Error ? error.message : 'Failed to fetch messages',
@@ -106,6 +121,19 @@ const useChatStore = create<ChatState>((set, get) => ({
   sendMessage: async (contactId: string, text: string, attachments = []) => {
     try {
       set({ isLoading: true, error: null });
+      
+      // Ensure the conversation exists before sending a message
+      const { conversations } = get();
+      if (!conversations[contactId]) {
+        // Create a new conversation entry with empty messages array
+        set({
+          conversations: {
+            ...conversations,
+            [contactId]: { contactId, messages: [] }
+          }
+        });
+      }
+      
       const messageId = websocketService.sendMessage(contactId, text, attachments);
       set({ isLoading: false });
       return messageId;
@@ -134,11 +162,14 @@ const useChatStore = create<ChatState>((set, get) => ({
         : new Date(message.timestamp).toISOString()
     };
     
+    const shouldMarkAsUnread = message.senderId !== user.id && activeConversationId !== contactId;
+    
     const updatedConversations = {
       ...conversations,
       [contactId]: {
         ...conversation,
-        messages: [...conversation.messages, formattedMessage]
+        messages: [...conversation.messages, formattedMessage],
+        isUnread: shouldMarkAsUnread ? true : conversation.isUnread
       }
     };
     
@@ -166,7 +197,8 @@ const useChatStore = create<ChatState>((set, get) => ({
             ...conversations,
             [contactId]: {
               ...conversation,
-              lastReadMessageId: lastMessage.id
+              lastReadMessageId: lastMessage.id,
+              isUnread: false
             }
           }
         });
@@ -210,7 +242,107 @@ const useChatStore = create<ChatState>((set, get) => ({
     });
   },
   
-  clearError: () => set({ error: null })
+  clearError: () => set({ error: null }),
+  
+  pinConversation: async (contactId: string, isPinned: boolean) => {
+    try {
+      set({ isLoading: true, error: null });
+      
+      await apiClient.patch(`/chats/conversation/${contactId}/pin`, null, {
+        params: { is_pinned: isPinned }
+      });
+      
+      const { conversations } = get();
+      const conversation = conversations[contactId] || { contactId, messages: [] };
+      
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: {
+            ...conversation,
+            isPinned
+          }
+        },
+        isLoading: false
+      });
+    } catch (error) {
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to pin conversation',
+        isLoading: false
+      });
+    }
+  },
+  
+  markConversationAsUnread: async (contactId: string, isUnread: boolean) => {
+    try {
+      set({ isLoading: true, error: null });
+      
+      await apiClient.patch(`/chats/conversation/${contactId}/unread`, null, {
+        params: { is_unread: isUnread }
+      });
+      
+      const { conversations } = get();
+      const conversation = conversations[contactId] || { contactId, messages: [] };
+      
+      set({
+        conversations: {
+          ...conversations,
+          [contactId]: {
+            ...conversation,
+            isUnread
+          }
+        },
+        isLoading: false
+      });
+    } catch (error) {
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to mark conversation as unread',
+        isLoading: false
+      });
+    }
+  },
+  
+  deleteConversation: async (contactId: string) => {
+    try {
+      // First, immediately update the UI by clearing the messages from the conversation
+      const { conversations, activeConversationId } = get();
+      
+      // Create a copy with an empty messages array for this contact
+      const updatedConversations = { ...conversations };
+      if (updatedConversations[contactId]) {
+        updatedConversations[contactId] = {
+          ...updatedConversations[contactId],
+          messages: [],
+          isPinned: false,
+          isUnread: false
+        };
+      }
+      
+      // If the deleted conversation was active, set activeConversationId to null
+      const newActiveId = activeConversationId === contactId ? null : activeConversationId;
+      
+      // Update the state immediately - don't wait for the API call
+      set({
+        conversations: updatedConversations,
+        activeConversationId: newActiveId,
+        isLoading: true,
+        error: null
+      });
+      
+      // Then make the API call to delete the conversation on the server
+      await apiClient.delete(`/chats/conversation/${contactId}`);
+      
+      // When API call completes, clear loading state
+      set({ isLoading: false });
+    } catch (error) {
+      // If there's an error, set the error message but don't restore the conversation
+      // This maintains immediate UI feedback even if the backend operation fails
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to delete conversation',
+        isLoading: false
+      });
+    }
+  }
 }));
 
 export { useChatStore };

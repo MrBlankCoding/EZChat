@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/authStore';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import ChatPage from './pages/ChatPage';
+import ContactsPage from './pages/ContactsPage';
 import SettingsPage from './pages/SettingsPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -74,6 +75,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <ChatPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/contacts"
+            element={
+              <ProtectedRoute>
+                <ContactsPage />
               </ProtectedRoute>
             }
           />

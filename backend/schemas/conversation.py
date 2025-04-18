@@ -7,6 +7,8 @@ from .message import MessageResponse
 class ConversationBase(BaseModel):
     user_id_1: str
     user_id_2: str
+    is_pinned: bool = False
+    is_unread: bool = False
 
 
 class ConversationCreate(ConversationBase):
@@ -33,7 +35,9 @@ class ConversationResponse(ConversationBase):
 
 
 class ConversationUpdate(BaseModel):
-    last_message_at: datetime
+    last_message_at: Optional[datetime] = None
+    is_pinned: Optional[bool] = None
+    is_unread: Optional[bool] = None
 
 
 class ConversationWithMessages(ConversationResponse):

@@ -10,7 +10,11 @@ from db.mongodb import (
     get_messages_collection,
     get_users_collection,
 )
-from schemas.conversation import ConversationResponse, ConversationWithMessages
+from schemas.conversation import (
+    ConversationResponse,
+    ConversationWithMessages,
+    ConversationUpdate,
+)
 from schemas.message import MessageResponse
 
 # Configure logging
@@ -123,7 +127,9 @@ async def get_conversations(current_user: FirebaseToken = Depends(get_current_us
                 {"user_id_2": current_user.firebase_uid},
             ]
         }
-    ).sort("last_message_at", -1)
+    ).sort(
+        [("is_pinned", -1), ("last_message_at", -1)]
+    )  # First sort by pinned status, then by last message time
 
     conversations = await cursor.to_list(length=100)
 
@@ -219,3 +225,128 @@ async def get_conversation_with_messages(
     conversation["messages"] = messages
 
     return conversation
+
+
+@router.patch("/conversation/{user_id}/pin")
+async def pin_conversation(
+    user_id: str,
+    is_pinned: bool,
+    current_user: FirebaseToken = Depends(get_current_user),
+):
+    """
+    Pin or unpin a conversation
+    """
+    # Create conversation ID (sort user IDs to ensure consistency)
+    conversation_id = f"{min(current_user.firebase_uid, user_id)}_{max(current_user.firebase_uid, user_id)}"
+
+    # Find the conversation
+    conversations_collection = get_conversations_collection()
+
+    # First, check if the conversation exists
+    conversation = await conversations_collection.find_one(
+        {
+            "$or": [
+                {"user_id_1": current_user.firebase_uid, "user_id_2": user_id},
+                {"user_id_1": user_id, "user_id_2": current_user.firebase_uid},
+            ]
+        }
+    )
+
+    if not conversation:
+        # Create a new conversation if it doesn't exist
+        new_conversation = {
+            "user_id_1": min(current_user.firebase_uid, user_id),
+            "user_id_2": max(current_user.firebase_uid, user_id),
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "is_pinned": is_pinned,
+            "is_unread": False,
+            "is_deleted": False,
+        }
+        result = await conversations_collection.insert_one(new_conversation)
+        conversation_id = str(result.inserted_id)
+    else:
+        # Update existing conversation
+        await conversations_collection.update_one(
+            {
+                "$or": [
+                    {"user_id_1": current_user.firebase_uid, "user_id_2": user_id},
+                    {"user_id_1": user_id, "user_id_2": current_user.firebase_uid},
+                ]
+            },
+            {"$set": {"is_pinned": is_pinned, "updated_at": datetime.utcnow()}},
+        )
+        conversation_id = str(conversation["_id"])
+
+    return {"id": conversation_id, "is_pinned": is_pinned}
+
+
+@router.patch("/conversation/{user_id}/unread")
+async def mark_conversation_unread(
+    user_id: str,
+    is_unread: bool,
+    current_user: FirebaseToken = Depends(get_current_user),
+):
+    """
+    Mark a conversation as read or unread
+    """
+    # Find the conversation
+    conversations_collection = get_conversations_collection()
+
+    result = await conversations_collection.update_one(
+        {
+            "$or": [
+                {"user_id_1": current_user.firebase_uid, "user_id_2": user_id},
+                {"user_id_1": user_id, "user_id_2": current_user.firebase_uid},
+            ]
+        },
+        {"$set": {"is_unread": is_unread, "updated_at": datetime.utcnow()}},
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        )
+
+    return {"success": True, "is_unread": is_unread}
+
+
+@router.delete("/conversation/{user_id}")
+async def delete_conversation(
+    user_id: str,
+    current_user: FirebaseToken = Depends(get_current_user),
+):
+    """
+    Completely delete a conversation and all its messages
+    """
+    # Create conversation ID (sort user IDs to ensure consistency)
+    conversation_id = f"{min(current_user.firebase_uid, user_id)}_{max(current_user.firebase_uid, user_id)}"
+
+    # Get collections
+    conversations_collection = get_conversations_collection()
+    messages_collection = get_messages_collection()
+
+    # Delete all messages in the conversation
+    delete_messages_result = await messages_collection.delete_many(
+        {"conversation_id": conversation_id}
+    )
+
+    # Delete the conversation
+    delete_conversation_result = await conversations_collection.delete_one(
+        {
+            "$or": [
+                {"user_id_1": current_user.firebase_uid, "user_id_2": user_id},
+                {"user_id_1": user_id, "user_id_2": current_user.firebase_uid},
+            ]
+        }
+    )
+
+    if delete_conversation_result.deleted_count == 0:
+        # If the conversation wasn't found, it's fine - we've still deleted any messages
+        logger.info(f"No conversation found to delete for {conversation_id}")
+
+    return {
+        "success": True,
+        "deleted_conversation": delete_conversation_result.deleted_count > 0,
+        "deleted_messages": delete_messages_result.deleted_count,
+    }

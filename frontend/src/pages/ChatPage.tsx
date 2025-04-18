@@ -4,7 +4,7 @@ import Sidebar from '../components/Sidebar';
 import { useAuthStore } from '../stores/authStore';
 import { useChatStore } from '../stores/chatStore';
 import { useContactsStore } from '../stores/contactsStore';
-import ContactList from '../components/ContactList';
+import ChatsList from '../components/ChatsList';
 import ChatWindow from '../components/ChatWindow';
 import websocketService from '../services/websocketService';
 
@@ -20,11 +20,11 @@ const ChatPage = () => {
   useEffect(() => {
     if (contactId) {
       setActiveConversation(contactId);
-    } else if (activeConversationId === null && contacts.length > 0) {
-      // If no active conversation, set the first contact as active
-      setActiveConversation(contacts[0].contact_id);
+    } else if (activeConversationId === null) {
+      // Don't automatically set the first contact as active
+      // Let the user explicitly choose a chat
     }
-  }, [contactId, contacts, activeConversationId, setActiveConversation]);
+  }, [contactId, activeConversationId, setActiveConversation]);
   
   // Function to check and update WebSocket connection status
   const checkWsConnection = useCallback(async () => {
@@ -36,6 +36,20 @@ const ChatPage = () => {
         const status = websocketService.getConnectionState();
         setWsStatus(status);
         console.log('[ChatPage] WebSocket Status:', status);
+        
+        // If we still have connection issues, try more drastic measures
+        if (status.state !== 'connected' || status.readyState !== 'OPEN') {
+          console.log('[ChatPage] Connection still problematic, forcing full reconnect');
+          websocketService.disconnect();
+          // Small delay to ensure complete disconnect
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          await websocketService.connect();
+          
+          // Get status after forced reconnect
+          const newStatus = websocketService.getConnectionState();
+          setWsStatus(newStatus);
+          console.log('[ChatPage] WebSocket Status after forced reconnect:', newStatus);
+        }
       } catch (error) {
         console.error('[ChatPage] WebSocket connection check failed:', error);
       }
@@ -103,7 +117,7 @@ const ChatPage = () => {
         <Sidebar />
         
         <div className="flex-1 flex overflow-hidden">
-          <ContactList />
+          <ChatsList />
           
           {isLoading ? (
             <div className="flex-1 flex items-center justify-center bg-white dark:bg-dark-900 transition-colors duration-200">
@@ -129,7 +143,7 @@ const ChatPage = () => {
                 <h3 className="text-xl font-medium text-gray-900 dark:text-white">No conversation selected</h3>
                 <p className="mt-2 text-base text-gray-500 dark:text-gray-400">
                   {contacts.length > 0 
-                    ? 'Select a contact from the list to start chatting' 
+                    ? 'Select a chat from the list to start messaging' 
                     : 'Add a contact to start your first conversation'}
                 </p>
               </div>

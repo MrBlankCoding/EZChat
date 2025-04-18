@@ -48,6 +48,11 @@ class WebSocketService {
       return;
     }
     
+    // Reset any previous reconnect attempts if this is a fresh connection
+    if (this.connectionState === 'disconnected') {
+      this.reconnectAttempts = 0;
+    }
+    
     this.connectionState = 'connecting';
     console.log('[WS] Initiating connection...');
     
@@ -60,6 +65,15 @@ class WebSocketService {
       }
 
       const auth = (await import('./firebaseConfig')).auth;
+      
+      // Try to refresh the token to ensure it's valid
+      try {
+        await auth.currentUser?.getIdToken(true); // Force refresh token
+      } catch (refreshError) {
+        console.warn('[WS] Token refresh failed:', refreshError);
+        // Continue with the existing token
+      }
+      
       const token = await auth.currentUser?.getIdToken();
       
       if (!token) {
@@ -68,23 +82,50 @@ class WebSocketService {
         return;
       }
       
+      // Log connection details to help debugging
+      console.log('[WS] Connecting with user:', user.id);
+      
       const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/ws'}?token=${token}`;
       
+      // Close any existing connection properly
       if (this.socket) {
-        this.socket.close();
+        try {
+          this.socket.onclose = null; // Prevent reconnect trigger on intentional close
+          this.socket.close();
+        } catch (err) {
+          console.warn('[WS] Error closing existing socket:', err);
+        }
         this.socket = null;
       }
       
+      // Create and configure new WebSocket
       this.socket = new WebSocket(wsUrl);
       
-      this.socket.onopen = this.handleOpen.bind(this);
+      // Set a connection timeout
+      const connectionTimeout = setTimeout(() => {
+        if (this.connectionState === 'connecting') {
+          console.error('[WS] Connection timeout');
+          if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
+            this.socket.close();
+            this.connectionState = 'disconnected';
+            this.handleClose({ code: 1006, reason: 'Connection timeout', wasClean: false } as CloseEvent);
+          }
+        }
+      }, 10000); // 10 second timeout
+      
+      // Set up event handlers
+      this.socket.onopen = (event) => {
+        clearTimeout(connectionTimeout);
+        this.handleOpen();
+      };
+      
       this.socket.onmessage = this.handleMessage.bind(this);
       this.socket.onclose = this.handleClose.bind(this);
       this.socket.onerror = this.handleError.bind(this);
     } catch (error) {
-      console.error('Error connecting to WebSocket:', error);
+      console.error('[WS] Error connecting to WebSocket:', error);
       this.connectionState = 'disconnected';
-      this.handleClose({ code: 1006, reason: 'Connection setup failed', wasClean: false } as CloseEvent);
+      this.handleClose({ code: 1006, reason: `Connection setup failed: ${error}`, wasClean: false } as CloseEvent);
     }
   }
   
@@ -123,11 +164,33 @@ class WebSocketService {
 
   private parseMessage(data: string): WebSocketMessage | null {
     try {
-      return JSON.parse(data);
-    } catch (parseError) {
-      console.error('Error parsing WebSocket message JSON:', parseError);
-      console.log('Raw message data:', data);
-      this.notifyErrorHandlers(`Parse error: ${parseError}`);
+      // First check if it's a plain string message
+      if (typeof data === 'string' && (data === 'ping' || data === 'pong')) {
+        return null;
+      }
+      
+      // Handle potential non-JSON messages 
+      try {
+        return JSON.parse(data);
+      } catch (parseError) {
+        console.error('Error parsing WebSocket message JSON:', parseError);
+        console.log('Raw message data:', data);
+        
+        // If it's not valid JSON but looks like a string message, create a structured error message
+        if (typeof data === 'string') {
+          return {
+            type: MessageType.ERROR,
+            payload: {
+              message: `Invalid JSON format: ${data.substring(0, 100)}${data.length > 100 ? '...' : ''}`
+            }
+          };
+        }
+        this.notifyErrorHandlers(`Parse error: ${parseError}`);
+        return null;
+      }
+    } catch (error) {
+      console.error('Unexpected error handling message data:', error);
+      this.notifyErrorHandlers(`Message handling error: ${error}`);
       return null;
     }
   }
@@ -155,12 +218,17 @@ class WebSocketService {
   
   private handleMessage(event: MessageEvent) {
     try {
-      if (event.data === 'pong') {
+      if (event.data === 'pong' || event.data === 'ping') {
+        // Ignore ping/pong heartbeat messages
         return;
       }
       
       const data = this.parseMessage(event.data);
-      if (!data || !data.type) {
+      if (!data) {
+        return; // Already logged in parseMessage
+      }
+      
+      if (!data.type) {
         console.warn('Received malformed WebSocket message:', event.data);
         this.notifyErrorHandlers('Malformed message received');
         return;
@@ -244,31 +312,79 @@ class WebSocketService {
       this.pingInterval = null;
     }
     
+    // Don't reconnect for normal closures (1000) or if auth failed (1008)
+    if (event.code === 1000 || event.code === 1008) {
+      console.log(`[WS] Clean disconnect or auth failure - not reconnecting`);
+      this.reconnectAttempts = 0;
+      return;
+    }
+    
+    // Don't reconnect if user is not authenticated
+    const { user } = useAuthStore.getState();
+    if (!user) {
+      console.log(`[WS] No authenticated user - not reconnecting`);
+      this.reconnectAttempts = 0;
+      return;
+    }
+    
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts);
       
+      console.log(`[WS] Reconnect attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts} scheduled in ${Math.round(delay/1000)}s`);
+      
       this.reconnectTimer = setTimeout(() => {
         this.reconnectAttempts++;
+        console.log(`[WS] Attempting reconnect #${this.reconnectAttempts}...`);
         this.connect();
       }, delay);
     } else {
-      console.error('[WS] Maximum reconnect attempts reached.');
+      console.error('[WS] Maximum reconnect attempts reached. Connection lost.');
+      // Notify application about permanent connection failure
+      this.notifyErrorHandlers({
+        type: 'connection_failed',
+        message: 'Failed to establish a stable connection after multiple attempts'
+      });
     }
   }
   
   private handleError(error: Event) {
     console.error('WebSocket error:', error);
     
+    // Check for connection issues
+    const isNetworkError = !navigator.onLine;
+    if (isNetworkError) {
+      console.error('[WS] Network connection unavailable');
+    }
+    
     const connectionDetails = {
       readyState: this.socket ? this.getReadyStateLabel(this.socket.readyState) : 'No socket',
       url: this.socket?.url || 'Not connected',
       connectionState: this.connectionState,
       reconnectAttempts: this.reconnectAttempts,
+      networkOnline: navigator.onLine,
       userInfo: useAuthStore.getState().user ? 'User authenticated' : 'No user authenticated'
     };
     console.error('WebSocket connection details:', connectionDetails);
     
-    this.notifyErrorHandlers(error);
+    // If we're in CONNECTING state, this is likely a connection failure
+    if (this.socket?.readyState === WebSocket.CONNECTING) {
+      console.error('[WS] Error occurred during connection attempt');
+      
+      // Force a socket close to trigger reconnect
+      if (this.socket) {
+        try {
+          this.socket.close();
+        } catch (e) {
+          // Ignore errors on closing
+        }
+      }
+    }
+    
+    this.notifyErrorHandlers({
+      type: 'websocket_error',
+      originalError: error,
+      connectionDetails
+    });
   }
   
   private getReadyStateLabel(readyState: number): string {
@@ -344,8 +460,8 @@ class WebSocketService {
     
     this.send({
       type: MessageType.TYPING,
-      from_user: user.id,
-      to_user: contactId,
+      from: user.id,
+      to: contactId,
       is_typing: isTyping,
       payload: {
         isTyping
@@ -363,6 +479,7 @@ class WebSocketService {
       to: contactId,
       payload: {
         messageId,
+        contactId,
         status: 'read',
         timestamp: new Date().toISOString()
       }
@@ -380,11 +497,26 @@ class WebSocketService {
   
   async testConnection() {
     const status = this.getConnectionState();
+    const { user } = useAuthStore.getState();
     
+    // Not connected or no user - reconnect
     if (status.state !== 'connected' || this.socket?.readyState !== WebSocket.OPEN) {
       this.disconnect();
       await new Promise(resolve => setTimeout(resolve, 500));
       return this.connect();
+    }
+    
+    // Check if we're connected with the right user ID
+    if (user && this.socket?.url) {
+      const socketUrl = this.socket.url;
+      // If the URL contains a different user ID, reconnect
+      if (!socketUrl.includes(user.id) && 
+          this.connectionState === 'connected') {
+        console.log('[WS] User ID mismatch, reconnecting with correct ID');
+        this.disconnect();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return this.connect();
+      }
     }
     
     this.sendPing();
