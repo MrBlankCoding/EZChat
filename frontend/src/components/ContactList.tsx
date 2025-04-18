@@ -6,6 +6,7 @@ import AddContact from './AddContact';
 import { UserPlusIcon, MagnifyingGlassIcon, XMarkIcon, EllipsisHorizontalIcon, TrashIcon, EnvelopeIcon, MapPinIcon } from '@heroicons/react/24/outline';
 import { MapPinIcon as MapPinIconSolid } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 
 const ContactList = () => {
   const navigate = useNavigate();
@@ -177,7 +178,7 @@ const ContactList = () => {
                     <div className="relative flex-shrink-0">
                       <img
                         className={`h-12 w-12 rounded-full object-cover ${isActive ? 'ring-2 ring-primary-500 dark:ring-secondary-500' : ''}`}
-                        src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
+                        src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
                         alt={contact.contact_display_name}
                       />
                       <div

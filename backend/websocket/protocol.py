@@ -12,6 +12,7 @@ class WebSocketMessageType(str, Enum):
 
     MESSAGE = "message"
     TYPING = "typing"
+    STATUS = "status"
     READ_RECEIPT = "read_receipt"
     DELIVERY_RECEIPT = "delivery_receipt"
     PRESENCE = "presence"
@@ -20,6 +21,7 @@ class WebSocketMessageType(str, Enum):
     REPLY = "reply"
     EDIT = "edit"
     DELETE = "delete"
+    TIMEZONE = "timezone"
 
 
 class WebSocketMessage(BaseModel):
@@ -55,7 +57,7 @@ class TextMessage(WebSocketMessage):
     message_id: str = Field(default_factory=lambda: str(uuid.uuid4()), alias="id")
     text: str
     timestamp: str
-    status: str
+    status: str = "sent"
     attachments: Optional[List[AttachmentData]] = None
     reply_to: Optional[str] = None
 
@@ -101,7 +103,7 @@ class ReadReceiptMessage(WebSocketMessage):
     type: WebSocketMessageType = WebSocketMessageType.READ_RECEIPT
     message_id: str
     status: str
-    timestamp: str
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
@@ -122,7 +124,7 @@ class DeliveryReceiptMessage(WebSocketMessage):
     type: WebSocketMessageType = WebSocketMessageType.DELIVERY_RECEIPT
     message_id: str
     status: str
-    timestamp: str
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
@@ -183,6 +185,7 @@ class ReplyMessage(TextMessage):
 
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
+        # Make sure type is correctly set
         d["type"] = WebSocketMessageType.REPLY
         return d
 
@@ -251,3 +254,37 @@ class ErrorMessage(BaseModel):
             "payload": {"code": self.code, "message": self.message},
         }
         return json.dumps(data)
+
+
+class TimezoneMessage(WebSocketMessage):
+    """
+    Message to inform the server about a user's timezone.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.TIMEZONE
+    timezone: str
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Move payload-related fields under payload
+        d["payload"] = {"timezone": d.pop("timezone")}
+        return d
+
+
+class StatusMessage(WebSocketMessage):
+    """
+    Status message for acknowledgements.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.STATUS
+    status: str = "ok"
+    message: str = ""
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Move payload-related fields under payload
+        d["payload"] = {
+            "status": d.pop("status"),
+            "message": d.pop("message"),
+        }
+        return d

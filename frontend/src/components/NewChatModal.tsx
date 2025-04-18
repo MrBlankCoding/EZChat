@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { XMarkIcon, MagnifyingGlassIcon, CheckIcon } from '@heroicons/react/24/outline';
 import { useContactsStore } from '../stores/contactsStore';
 import { useChatStore } from '../stores/chatStore';
 import { useNavigate } from 'react-router-dom';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 
 interface NewChatModalProps {
   onClose: () => void;
@@ -105,7 +106,7 @@ const NewChatModal = ({ onClose }: NewChatModalProps) => {
                     <div className="relative flex-shrink-0">
                       <img
                         className="h-10 w-10 rounded-full object-cover"
-                        src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
+                        src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
                         alt={contact.contact_display_name}
                       />
                       <div

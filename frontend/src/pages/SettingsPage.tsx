@@ -11,6 +11,7 @@ import notificationService from '../services/notificationService';
 import { BellIcon, BellSlashIcon } from '@heroicons/react/24/outline';
 import ThemeToggle from '../components/ThemeToggle';
 import { useThemeStore } from '../stores/themeStore';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 
 const SettingsPage = () => {
   const { user, setUser, logout } = useAuthStore();
@@ -202,7 +203,7 @@ const SettingsPage = () => {
                           <div className="relative">
                             <img
                               className="h-16 w-16 rounded-full object-cover"
-                              src={avatarPreview || (user?.photoURL || 'https://via.placeholder.com/150')}
+                              src={avatarPreview || (user?.photoURL || (user?.displayName ? generateAvatarUrl(user.displayName, 150) : generateAvatarUrl('User', 150)))}
                               alt="Avatar Preview"
                             />
                             {uploadProgress > 0 && uploadProgress < 100 && (

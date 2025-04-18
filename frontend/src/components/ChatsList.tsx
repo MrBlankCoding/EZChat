@@ -6,6 +6,8 @@ import { MagnifyingGlassIcon, XMarkIcon, EllipsisHorizontalIcon, TrashIcon, Enve
 import { MapPinIcon as MapPinIconSolid } from '@heroicons/react/24/solid';
 import NewChatModal from './NewChatModal';
 import toast from 'react-hot-toast';
+import { formatRelativeTime } from '../utils/dateUtils';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 
 const ChatsList = () => {
   const navigate = useNavigate();
@@ -199,7 +201,7 @@ const ChatsList = () => {
                     <div className="relative flex-shrink-0">
                       <img
                         className={`h-12 w-12 rounded-full object-cover ${isActive ? 'ring-2 ring-primary-500 dark:ring-secondary-500' : ''}`}
-                        src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
+                        src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
                         alt={contact.contact_display_name}
                       />
                       <div
@@ -240,6 +242,11 @@ const ChatsList = () => {
                           'No messages yet'
                         )}
                       </p>
+                      {lastMessage && (
+                        <div className="flex items-center justify-end mt-1 text-xs text-gray-400 dark:text-gray-500">
+                          {lastMessage.timestamp && formatRelativeTime(lastMessage.timestamp)}
+                        </div>
+                      )}
                     </div>
                     
                     {/* Options button */}

@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { format } from 'date-fns';
-import { CheckIcon, PencilIcon, TrashIcon, FaceSmileIcon, ArrowUturnLeftIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, PencilIcon, TrashIcon, FaceSmileIcon, ArrowUturnLeftIcon, EllipsisHorizontalIcon, PaperClipIcon } from '@heroicons/react/24/outline';
 import { useChatStore } from '../stores/chatStore';
 import { useContactsStore } from '../stores/contactsStore';
 import { useAuthStore } from '../stores/authStore';
 import toast from 'react-hot-toast';
+import { formatMessageTime } from '../utils/dateUtils';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 
 interface Attachment {
   type: string;
@@ -255,15 +256,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
       // Check if timestamp is valid
       if (!message.timestamp) return '';
       
-      // Parse the timestamp correctly - handle both string and number formats
-      const date = typeof message.timestamp === 'string' 
-        ? new Date(message.timestamp) 
-        : new Date(Number(message.timestamp));
-      
-      // Validate the date is valid
-      if (isNaN(date.getTime())) return '';
-      
-      return format(date, 'p');
+      // Use our new timezone-aware formatter
+      return formatMessageTime(message.timestamp);
     } catch (error) {
       console.error('Error formatting message timestamp:', error, message);
       return '';
@@ -277,7 +271,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isOwn, contactId
         {!isOwn && (
           <div className="absolute -left-12 -top-1">
             <img 
-              src={contact?.contact_avatar_url || 'https://via.placeholder.com/40'} 
+              src={contact?.contact_avatar_url || generateAvatarUrl(contact?.contact_display_name || '', 40)} 
               alt={senderName}
               className="h-8 w-8 rounded-full object-cover shadow-sm"
             />

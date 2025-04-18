@@ -78,6 +78,8 @@ class MessageResponse(MessageBase):
     edited_at: Optional[datetime] = None
     is_deleted: Optional[bool] = False
     deleted_at: Optional[datetime] = None
+    sender_timezone: Optional[str] = None
+    recipient_timezone: Optional[str] = None
 
     # Add this to ensure text is always included in the response
     text: str

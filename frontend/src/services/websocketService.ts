@@ -14,7 +14,8 @@ enum MessageType {
   REACTION = "reaction",
   REPLY = "reply",
   EDIT = "edit",
-  DELETE = "delete"
+  DELETE = "delete",
+  TIMEZONE = "timezone"
 }
 
 interface WebSocketMessage {
@@ -39,6 +40,7 @@ interface WebSocketMessage {
   is_deleted?: boolean;
   deleted_at?: string;
   reactions?: any[];
+  timezone?: string;
   payload: any;
 }
 
@@ -118,7 +120,13 @@ class WebSocketService {
         // Log connection details to help debugging
         console.log('[WS] Connecting with user:', user.id);
         
-        const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/ws'}?token=${token}`;
+        // Extract WebSocket URL from environment or use fallback
+        const baseWsUrl = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/ws';
+        
+        // Sanitize the WebSocket URL to ensure it has the correct format
+        const wsUrlBase = baseWsUrl.trim();
+        const wsUrl = `${wsUrlBase}${wsUrlBase.includes('?') ? '&' : '?'}token=${token}`;
+        
         console.log('[WS] Using WebSocket URL:', wsUrl.replace(/token=.*$/, 'token=***'));
         
         // Close any existing connection properly
@@ -133,7 +141,15 @@ class WebSocketService {
         }
         
         // Create and configure new WebSocket
-        this.socket = new WebSocket(wsUrl);
+        try {
+          this.socket = new WebSocket(wsUrl);
+        } catch (wsError) {
+          console.error('[WS] Error creating WebSocket connection:', wsError);
+          this.connectionState = 'disconnected';
+          this.connectingPromise = null;
+          reject(new Error(`Failed to create WebSocket connection: ${wsError}`));
+          return;
+        }
         
         // Set a connection timeout
         const connectionTimeout = setTimeout(() => {
@@ -443,85 +459,63 @@ class WebSocketService {
   }
   
   private handleClose(event: CloseEvent) {
-    console.log(`[WS] Connection closed. Code: ${event.code}, Reason: ${event.reason || 'No reason provided'}, Clean: ${event.wasClean}`);
-    this.connectionState = 'disconnected';
+    console.log(`[WS] Connection closed: ${event.code} ${event.reason || ''}`);
     
-    // Handle different close codes
-    if (event.code === 1000) {
-      // Normal closure
-      console.log('[WS] Normal closure, no reconnect needed');
-      return;
-    } else if (event.code === 1006) {
-      console.error('[WS] Abnormal closure (1006) - server might be down or network issue');
-    } else if (event.code === 1008) {
-      console.error('[WS] Policy violation (1008) - authentication may have failed');
-    } else if (event.code === 1011) {
-      console.error('[WS] Internal server error (1011)');
-    } else {
-      console.error(`[WS] Connection closed with code ${event.code}`);
-    }
-    
-    // Clear any existing ping interval
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-    
-    // Don't reconnect if max attempts reached
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error(`[WS] Max reconnect attempts (${this.maxReconnectAttempts}) reached, giving up`);
-      this.notifyErrorHandlers(`WebSocket disconnected after ${this.maxReconnectAttempts} attempts`);
-      return;
-    }
-    
-    // Don't reconnect on authentication failures
-    if (event.code === 1008) {
-      console.error('[WS] Authentication failure, not attempting reconnect');
-      this.notifyErrorHandlers('WebSocket authentication failed');
-      return;
-    }
-    
-    // Don't reconnect if we're already trying to reconnect
-    if (this.reconnectTimer || this.connectingPromise) {
-      console.log('[WS] Reconnect already in progress, skipping additional attempt');
-      return;
-    }
-    
-    // Implement exponential backoff for reconnect
-    const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts);
-    console.log(`[WS] Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`);
-    
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
+    if (this.connectionState === 'connected') {
+      this.connectionState = 'disconnected';
+      
+      // Don't reconnect if it was a clean close by us
+      if (event.wasClean) {
+        console.log('[WS] Clean connection close, not reconnecting');
+        return;
+      }
+      
+      // Status Code 1000 (Normal Closure) or 1001 (Going Away) shouldn't trigger a reconnect
+      if (event.code === 1000 || event.code === 1001) {
+        console.log(`[WS] Normal closure (${event.code}), not reconnecting`);
+        return;
+      }
+      
+      // Don't reconnect if we've exceeded our max attempts
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        console.error(`[WS] Maximum reconnect attempts (${this.maxReconnectAttempts}) exceeded`);
+        return;
+      }
+      
       this.reconnectAttempts++;
-      console.log(`[WS] Reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
-      this.connect().catch(err => {
-        console.error('[WS] Reconnect attempt failed:', err);
-      });
-    }, delay);
+      
+      // Exponential backoff for reconnect
+      const delay = this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1);
+      console.log(`[WS] Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`);
+      
+      this.reconnectTimer = setTimeout(() => {
+        console.log(`[WS] Attempting reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        this.connect().catch(error => {
+          console.error('[WS] Reconnect attempt failed:', error);
+        });
+      }, delay);
+    }
   }
   
   private handleError(error: Event) {
     console.error('[WS] WebSocket error:', error);
+    this.notifyErrorHandlers("WebSocket connection error");
     
-    // Try to get more error details
-    if (this.socket) {
-      console.error(`[WS] Socket state: ${this.getReadyStateLabel(this.socket.readyState)}`);
-      try {
-        console.error('[WS] Socket info:', {
-          bufferedAmount: this.socket.bufferedAmount,
-          protocol: this.socket.protocol || 'none',
-          extensions: this.socket.extensions || 'none',
-          binaryType: this.socket.binaryType
+    // Check if we can determine if this is a network connectivity issue
+    if (navigator && 'onLine' in navigator && !navigator.onLine) {
+      console.log('[WS] Browser is offline, waiting for online status');
+      
+      // Set up a one-time event listener for when we go back online
+      const onlineHandler = () => {
+        console.log('[WS] Browser is back online, attempting to reconnect');
+        window.removeEventListener('online', onlineHandler);
+        this.connect().catch(err => {
+          console.error('[WS] Reconnect attempt after going online failed:', err);
         });
-      } catch (e) {
-        console.error('[WS] Could not access socket properties:', e);
-      }
+      };
+      
+      window.addEventListener('online', onlineHandler);
     }
-    
-    this.notifyErrorHandlers('WebSocket connection error');
-    
-    // We're not calling handleClose here as the onclose handler will be called automatically
   }
   
   private getReadyStateLabel(readyState: number): string {
@@ -579,8 +573,6 @@ class WebSocketService {
       to: contactId,
       payload: {
         id: messageId,
-        sender_id: user.id,
-        recipient_id: contactId,
         text,
         timestamp,
         status: 'sent',
@@ -880,6 +872,40 @@ class WebSocketService {
     this.send(replyMsg);
     
     return messageId;
+  }
+
+  /**
+   * Send user's timezone information to the server
+   * @param timezone User's timezone (e.g. 'America/New_York')
+   */
+  sendUserTimezone(timezone: string) {
+    if (!this.isConnected()) {
+      console.warn('[WS] Cannot send timezone, not connected');
+      // Queue the timezone send for when we connect
+      this.connect().then(() => this.sendUserTimezone(timezone)).catch(err => {
+        console.error('[WS] Failed to connect to send timezone:', err);
+      });
+      return;
+    }
+    
+    try {
+      const { user } = useAuthStore.getState();
+      if (!user) return;
+      
+      const message: WebSocketMessage = {
+        type: MessageType.TIMEZONE,
+        from: user.id,
+        to: null,
+        payload: {
+          timezone
+        }
+      };
+      
+      this.send(message);
+      console.log('[WS] Sent timezone information:', timezone);
+    } catch (error) {
+      console.error('[WS] Error sending timezone:', error);
+    }
   }
 }
 

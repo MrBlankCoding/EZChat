@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import React, { useState, FormEvent } from 'react';
 import { useContactsStore } from '../stores/contactsStore';
 import { MagnifyingGlassIcon, PlusIcon, XMarkIcon, CheckIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import apiClient from '../services/apiClient';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 
 interface AddContactProps {
   onClose: () => void;
@@ -183,7 +184,7 @@ const AddContact = ({ onClose }: AddContactProps) => {
                       <div className="flex items-center">
                         <img
                           className="h-8 w-8 rounded-full object-cover"
-                          src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
+                          src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
                           alt={contact.contact_display_name}
                         />
                         <div className="ml-3">
@@ -218,7 +219,7 @@ const AddContact = ({ onClose }: AddContactProps) => {
                     <div className="flex items-center">
                       <img
                         className="h-8 w-8 rounded-full object-cover"
-                        src={user.avatar_url || 'https://via.placeholder.com/150'}
+                        src={user.avatar_url || generateAvatarUrl(user.display_name, 150)}
                         alt={user.display_name}
                       />
                       <div className="ml-3">

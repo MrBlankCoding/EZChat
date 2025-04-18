@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
-import { getMessaging } from 'firebase/messaging';
+import type { Messaging } from 'firebase/messaging';
 
 // Your Firebase configuration
 // Replace with your actual Firebase project configuration
@@ -21,15 +21,42 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const storage = getStorage(app);
 
-// Initialize Messaging conditionally (only in browser environment)
-let messaging = null;
-try {
-  // Check if we're in a browser environment that supports FCM
-  if (typeof window !== 'undefined' && 'Notification' in window) {
-    messaging = getMessaging(app);
+// Initialize Messaging conditionally (only in supported browsers)
+let messaging: Messaging | null = null;
+
+// Check if the browser supports FCM
+const isFCMSupported = () => {
+  if (typeof window === 'undefined') return false;
+  
+  // Check if running in a secure context
+  if (!window.isSecureContext) return false;
+  
+  // Check if service workers are supported
+  if (!('serviceWorker' in navigator)) return false;
+  
+  // Check if notification API is available
+  if (!('Notification' in window)) return false;
+  
+  return true;
+};
+
+// Only try to initialize messaging if browser supports it
+if (isFCMSupported()) {
+  try {
+    // Dynamically import to prevent errors in unsupported browsers
+    import('firebase/messaging').then(({ getMessaging }) => {
+      messaging = getMessaging(app);
+      console.log('Firebase Cloud Messaging initialized successfully');
+    }).catch(error => {
+      console.debug('Firebase Cloud Messaging not available:', error);
+      // Silent fallback - no need to show error to users
+    });
+  } catch (error) {
+    console.debug('Firebase Messaging import failed:', error);
+    // Silent fallback - no need to show error to users
   }
-} catch (error) {
-  console.warn('Firebase Messaging initialization failed:', error);
+} else {
+  console.debug('Firebase Cloud Messaging not supported in this browser');
 }
 
 export { auth, storage, messaging };

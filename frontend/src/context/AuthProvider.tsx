@@ -28,27 +28,45 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       if (isAuthenticated && user) {
         console.log('[AuthProvider] User authenticated, connecting WebSocket...');
         
-        // Check if already connected before connecting
-        const status = websocketService.getConnectionState();
-        if (status.state !== 'connected') {
-          await websocketService.connect();
-        }
-        
-        // Set up a connection health check every 60 seconds
-        wsCheckInterval = setInterval(async () => {
-          try {
-            const isConnected = await websocketService.testConnection();
-            if (!isConnected) {
-              console.log('[AuthProvider] WebSocket health check failed, reconnecting...');
-              await websocketService.connect();
-            }
-          } catch (error) {
-            console.error('[AuthProvider] WebSocket health check error:', error);
+        try {
+          // Check if already connected before connecting
+          const status = websocketService.getConnectionState();
+          if (status.state !== 'connected') {
+            await websocketService.connect();
+            console.log('[AuthProvider] WebSocket connected successfully');
           }
-        }, 60000);
-        
-        // Initialize notifications
-        initializeNotifications();
+          
+          // Set up a connection health check every 60 seconds
+          wsCheckInterval = setInterval(async () => {
+            try {
+              const isConnected = await websocketService.testConnection();
+              if (!isConnected) {
+                console.log('[AuthProvider] WebSocket health check failed, reconnecting...');
+                await websocketService.connect().catch(err => {
+                  console.log('[AuthProvider] WebSocket reconnect failed:', err.message);
+                  // Don't throw - we'll try again on next interval
+                });
+              }
+            } catch (error) {
+              console.log('[AuthProvider] WebSocket health check error:', 
+                error instanceof Error ? error.message : 'Unknown error');
+              // Continue despite error - we'll try again on next interval
+            }
+          }, 60000);
+          
+          // Initialize notifications
+          try {
+            await initializeNotifications();
+          } catch (error) {
+            console.log('[AuthProvider] Notification initialization failed:', 
+              error instanceof Error ? error.message : 'Unknown error');
+            // Continue despite notification error
+          }
+        } catch (error) {
+          console.error('[AuthProvider] Error during WebSocket setup:', 
+            error instanceof Error ? error.message : 'Unknown error');
+          // Don't halt the app for WebSocket errors
+        }
       } else if (!isLoading && initialized) {
         // Disconnect WebSocket when logged out
         console.log('[AuthProvider] User not authenticated, disconnecting WebSocket');

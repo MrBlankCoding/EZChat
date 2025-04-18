@@ -10,6 +10,7 @@ import NotFoundPage from './pages/NotFoundPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './context/AuthProvider';
+import timezoneService from './services/timezoneService';
 
 function App() {
   const { isAuthenticated, initialized, checkAuth } = useAuthStore();
@@ -18,6 +19,13 @@ function App() {
   useEffect(() => {
     checkAuth();
   }, [checkAuth]);
+  
+  // Initialize timezone service when authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      timezoneService.initialize();
+    }
+  }, [isAuthenticated]);
   
   // Handle notification clicks from service worker
   useEffect(() => {

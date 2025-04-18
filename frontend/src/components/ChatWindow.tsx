@@ -12,12 +12,13 @@ import {
   DocumentIcon,
   FilmIcon,
 } from '@heroicons/react/24/outline';
-import { format } from 'date-fns';
 import websocketService from '../services/websocketService';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage } from '../services/firebaseConfig';
 import MessageBubble from './MessageBubble';
 import TypingIndicator from './TypingIndicator';
+import { formatDate } from '../utils/dateUtils';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 
 interface ChatWindowProps {
   contactId: string;
@@ -310,7 +311,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
           <div className="flex-shrink-0 relative">
             <img
               className="h-10 w-10 rounded-full object-cover ring-2 ring-gray-100 dark:ring-dark-700"
-              src={contact.contact_avatar_url || 'https://via.placeholder.com/150'}
+              src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
               alt={contact.contact_display_name}
             />
             <div
@@ -339,7 +340,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
                       const date = new Date(contact.updated_at);
                       // Check if the date is valid
                       return !isNaN(date.getTime())
-                        ? `Last seen ${format(date, 'p')}`
+                        ? `Last seen ${formatDate(date, 'p')}`
                         : 'Offline';
                     } catch (error) {
                       return 'Offline';

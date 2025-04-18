@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import NotificationBadge from './NotificationBadge';
@@ -11,6 +11,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
 } from '@heroicons/react/24/outline';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 
 const Sidebar = () => {
   const { user } = useAuthStore();
@@ -57,7 +58,7 @@ const Sidebar = () => {
         <div className="relative">
           <img
             className="h-10 w-10 rounded-full object-cover ring-2 ring-primary-200 dark:ring-secondary-700"
-            src={user?.photoURL || 'https://via.placeholder.com/150'}
+            src={user?.photoURL || (user?.displayName ? generateAvatarUrl(user.displayName, 150) : generateAvatarUrl('User', 150))}
             alt="User avatar"
           />
           <div className={`absolute -bottom-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-white dark:border-dark-800 ${
