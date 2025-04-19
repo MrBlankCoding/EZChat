@@ -2,11 +2,11 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useChatStore } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import { useContactsStore } from '../stores/contactsStore';
-import { 
-  PaperAirplaneIcon, 
-  PaperClipIcon, 
-  FaceSmileIcon, 
-  MicrophoneIcon,
+import {
+  PaperAirplaneIcon,
+  PaperClipIcon,
+  FaceSmileIcon,
+  MicrophoneIcon, 
   XMarkIcon,
   PhotoIcon,
   DocumentIcon,
@@ -20,10 +20,11 @@ import { storage } from '../services/firebaseConfig';
 import MessageBubble from './MessageBubble';
 import TypingIndicator from './TypingIndicator';
 import StatusIndicator from './StatusIndicator';
-import { generateAvatarUrl } from '../utils/avatarUtils';
+import { formatMessageTime } from '../utils/dateUtils';
+import { Message, Attachment } from '../types';
 import { useWebSocketConnection } from '../hooks/useWebSocketConnection';
+import { generateAvatarUrl } from '../utils/avatarUtils';
 import EmojiPicker, { EmojiClickData, Theme, EmojiStyle, Categories } from 'emoji-picker-react';
-import { Message } from '../types';
 import { toast } from 'react-hot-toast';
 
 interface ChatWindowProps {
@@ -50,13 +51,13 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const { 
     messages, 
     typingIndicator, 
-    contactStatus 
+    contactStatus,
   } = useChatStore(state => {
     const conversation = state.conversations[contactId];
     return {
       messages: conversation?.messages || [],
       typingIndicator: state.typingIndicators[contactId] || false,
-      contactStatus: conversation?.contactStatus || 'offline' // Assuming status is stored here
+      contactStatus: conversation?.contactStatus || 'offline', // Assuming status is stored here
     };
   }, (oldState, newState) => {
     // Custom equality check: re-render if messages array ref, typing, status changes, OR message statuses change.
@@ -300,11 +301,23 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
           async () => {
             try {
               const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+              
+              // Determine the primary type (image, video, audio, file)
+              let primaryType = 'file';
+              if (file.type.startsWith('image/')) {
+                primaryType = 'image';
+              } else if (file.type.startsWith('video/')) {
+                primaryType = 'video';
+              } else if (file.type.startsWith('audio/')) {
+                primaryType = 'audio';
+              }
+              
               resolve({
-                type: file.type.split('/')[0],
+                type: primaryType,
                 url: downloadURL,
                 name: file.name,
                 size: file.size,
+                fileType: file.type, // Store the full MIME type for reference
               });
             } catch (error) {
               reject(error);
@@ -488,7 +501,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const renderMessages = () => {
     return (
       <div className="space-y-2 px-4">
-        {messages.map((msg: Message) => {
+        {messages.map((msg) => {
           const isOwn = msg.senderId === user?.id;
           const msgContact = !isOwn ? contacts.find(c => c.contact_id === msg.senderId) : null;
           

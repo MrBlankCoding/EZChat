@@ -26,9 +26,13 @@ def initialize_firebase() -> bool:
                 "Firebase Admin SDK initialized using Application Default Credentials."
             )
         else:
-            cred_path = os.getenv(
-                "FIREBASE_ADMIN_SDK_CREDENTIALS", "serviceAccountKey.json"
+            # Update path to use the correct location
+            default_cred_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "auth",
+                "serviceAccountKey.json",
             )
+            cred_path = os.getenv("FIREBASE_ADMIN_SDK_CREDENTIALS", default_cred_path)
             if os.path.exists(cred_path):
                 cred = credentials.Certificate(cred_path)
                 firebase_admin.initialize_app(cred)

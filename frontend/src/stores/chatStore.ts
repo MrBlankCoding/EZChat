@@ -5,6 +5,18 @@ import websocketService from '../services/websocketService';
 import { useAuthStore } from './authStore';
 import { useContactsStore } from './contactsStore';
 import { PresenceState } from '../services/presenceManager';
+import { Attachment } from '../types';
+
+export interface FileAttachment {
+  type: string;
+  url: string;
+  name: string;
+  size?: number;
+  fileType?: string;
+  thumbnailUrl?: string;
+  metadata?: Record<string, any>;
+  id?: string;
+}
 
 export interface Message {
   id: string;
@@ -13,7 +25,7 @@ export interface Message {
   text: string;
   timestamp: number | string;
   status: 'sent' | 'delivered' | 'read';
-  attachments?: any[];
+  attachments?: FileAttachment[];
   replyTo?: string;
   isEdited?: boolean;
   editedAt?: string;
@@ -56,7 +68,8 @@ interface ChatState {
   updateEditedMessage: (messageId: string, contactId: string, text: string, editedAt: string) => void;
   deleteMessage: (messageId: string, contactId: string) => Promise<boolean>;
   updateDeletedMessage: (messageId: string, contactId: string, deletedAt?: string) => void;
-  sendReply: (contactId: string, text: string, replyToMessageId: string, attachments?: any[]) => Promise<void>;
+  sendReply: (contactId: string, text: string, replyToMessageId: string, attachments?: any[]) => Promise<string | undefined>;
+  getAllImageAttachments: () => Attachment[];
 }
 
 const useChatStore = create<ChatState>()(
@@ -108,20 +121,36 @@ const useChatStore = create<ChatState>()(
           set({ isLoading: true, error: null });
           
           const response = await apiClient.get(`/chats/${contactId}`);
-          const messages = response.data.map((message: any) => ({
-            id: message.id || message._id,
-            senderId: message.senderId || message.sender_id,
-            receiverId: message.receiverId || message.recipient_id,
-            text: message.text || '',
-            timestamp: message.timestamp || message.created_at,
-            status: message.status || 'sent',
-            attachments: message.attachments || [],
-            replyTo: message.reply_to,
-            isEdited: message.is_edited || false,
-            editedAt: message.edited_at,
-            isDeleted: message.is_deleted || false,
-            deletedAt: message.deleted_at
-          }));
+          const messages = response.data.map((message: any) => {
+            // Process attachments to ensure they follow the FileAttachment structure
+            const attachments = (message.attachments || []).map((att: any) => {
+              if (typeof att === 'object' && att !== null) {
+                return {
+                  type: att.type || 'file',
+                  url: att.url || '',
+                  name: att.name || 'Unknown file',
+                  size: att.size,
+                  fileType: att.fileType
+                };
+              }
+              return att;
+            });
+            
+            return {
+              id: message.id || message._id,
+              senderId: message.senderId || message.sender_id,
+              receiverId: message.receiverId || message.recipient_id,
+              text: message.text || '',
+              timestamp: message.timestamp || message.created_at,
+              status: message.status || 'sent',
+              attachments: attachments,
+              replyTo: message.reply_to,
+              isEdited: message.is_edited || false,
+              editedAt: message.edited_at,
+              isDeleted: message.is_deleted || false,
+              deletedAt: message.deleted_at
+            };
+          });
           
           const { conversations } = get();
           const existingConversation = conversations[contactId] || {};
@@ -161,7 +190,7 @@ const useChatStore = create<ChatState>()(
             });
           }
           
-          const messageId = websocketService.sendMessage(contactId, text, attachments);
+          const messageId = await websocketService.sendMessage(contactId, text, attachments);
           set({ isLoading: false });
           return messageId;
         } catch (error) {
@@ -539,22 +568,71 @@ const useChatStore = create<ChatState>()(
       },
       
       sendReply: async (contactId: string, text: string, replyToMessageId: string, attachments = []) => {
-        const { user } = useAuthStore.getState();
-        if (!user) {
-          set({ error: 'User not authenticated', isLoading: false });
-          return;
-        }
-        
         try {
           set({ isLoading: true, error: null });
-          websocketService.sendReply(contactId, text, replyToMessageId, attachments);
+          
+          const messageId = await websocketService.sendReply(contactId, text, replyToMessageId, attachments);
           set({ isLoading: false });
+          
+          return messageId;
         } catch (error) {
           set({ 
             error: error instanceof Error ? error.message : 'Failed to send reply',
             isLoading: false
           });
+          return undefined;
         }
+      },
+      
+      getAllImageAttachments: () => {
+        const { conversations, activeConversationId } = get();
+        
+        if (!activeConversationId) {
+          console.log("No active conversation ID");
+          return [];
+        }
+        
+        const conversation = conversations[activeConversationId];
+        if (!conversation) {
+          console.log(`Conversation with ID ${activeConversationId} not found`);
+          return [];
+        }
+        
+        console.log(`Found ${conversation.messages.length} messages in conversation`);
+        
+        const allAttachments: Attachment[] = [];
+        conversation.messages.forEach(message => {
+          if (message.attachments && message.attachments.length > 0 && !message.isDeleted) {
+            console.log(`Found ${message.attachments.length} attachments in message ${message.id}`);
+            
+            message.attachments.forEach(attachment => {
+              const type = attachment.type || '';
+              const fileType = attachment.fileType || '';
+              if (
+                type === 'image' || 
+                type.startsWith('image/') || 
+                fileType?.startsWith('image/')
+              ) {
+                console.log(`Found image attachment: ${attachment.name}`);
+                allAttachments.push({
+                  id: attachment.id || `img-${Math.random().toString(36).substring(2)}`,
+                  type: attachment.type,
+                  url: attachment.url,
+                  name: attachment.name,
+                  size: attachment.size,
+                  fileType: attachment.fileType,
+                  thumbnailUrl: attachment.thumbnailUrl,
+                  metadata: attachment.metadata
+                });
+              } else {
+                console.log(`Skipping non-image attachment: ${attachment.name} (type: ${type}, fileType: ${fileType})`);
+              }
+            });
+          }
+        });
+        
+        console.log(`Found ${allAttachments.length} total image attachments`);
+        return allAttachments;
       }
     }),
     {

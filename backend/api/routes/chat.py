@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from bson.objectid import ObjectId
+import json
 
 from auth.firebase import get_current_user, FirebaseToken
 from db.mongodb import (
@@ -63,9 +64,13 @@ async def get_chat_history(
     for message in messages:
         message["_id"] = str(message["_id"])
 
+        # Handle message payload formats
         if "payload" in message and message.get("type") == "message":
             if "text" in message["payload"]:
                 message["text"] = message["payload"]["text"]
+            # Check if attachments are in the payload
+            if "attachments" in message["payload"] and not message.get("attachments"):
+                message["attachments"] = message["payload"]["attachments"]
 
         if "text" not in message:
             message["text"] = ""
@@ -75,6 +80,19 @@ async def get_chat_history(
 
         if "reply_to" not in message and "replyTo" in message:
             message["reply_to"] = message["replyTo"]
+
+        # Ensure attachments field is included, default to empty list if missing
+        if "attachments" not in message:
+            message["attachments"] = []
+
+        # Log message with attachments for debugging
+        if message.get("attachments"):
+            logger.info(f"Retrieved message with attachments: {message['_id']}")
+            try:
+                logger.info(f"Attachment content: {json.dumps(message['attachments'])}")
+            except Exception as e:
+                logger.error(f"Error serializing attachments: {e}")
+                logger.info(f"Attachments raw: {message['attachments']}")
 
         processed_messages.append(MessageResponse.model_validate(message))
 
@@ -184,6 +202,40 @@ async def get_conversation_with_messages(
 
     for message in messages:
         message["_id"] = str(message["_id"])
+
+        # Handle message payload formats
+        if "payload" in message and message.get("type") == "message":
+            if "text" in message["payload"]:
+                message["text"] = message["payload"]["text"]
+            # Check if attachments are in the payload
+            if "attachments" in message["payload"] and not message.get("attachments"):
+                message["attachments"] = message["payload"]["attachments"]
+
+        # Ensure text field exists
+        if "text" not in message:
+            message["text"] = ""
+
+        # Ensure attachments field exists
+        if "attachments" not in message:
+            message["attachments"] = []
+
+        # Set required fields if missing
+        message["is_edited"] = message.get("is_edited", False)
+        message["is_deleted"] = message.get("is_deleted", False)
+
+        if "reply_to" not in message and "replyTo" in message:
+            message["reply_to"] = message["replyTo"]
+
+        # Log message with attachments for debugging
+        if message.get("attachments"):
+            logger.info(
+                f"Retrieved conversation message with attachments: {message['_id']}"
+            )
+            try:
+                logger.info(f"Attachment content: {json.dumps(message['attachments'])}")
+            except Exception as e:
+                logger.error(f"Error serializing attachments: {e}")
+                logger.info(f"Attachments raw: {message['attachments']}")
 
     unread_message_ids = [
         (

@@ -2,14 +2,15 @@
 export type MessageStatus = 'sent' | 'delivered' | 'read';
 
 export interface Attachment {
-  id: string;
+  id?: string;
   type: string;
   url: string;
   name: string;
-  size: number;
+  size?: number;
   mimeType?: string;
   thumbnailUrl?: string;
   metadata?: Record<string, any>;
+  fileType?: string;
 }
 
 export interface Message {
@@ -24,6 +25,7 @@ export interface Message {
   editedAt?: string;
   isDeleted?: boolean;
   deletedAt?: string;
+  receiverId?: string;
 }
 
 // User related types

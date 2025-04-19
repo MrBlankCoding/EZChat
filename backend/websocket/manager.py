@@ -183,7 +183,7 @@ async def update_message_status(
 ):
     try:
         if not message_id:
-            logger.error("Cannot update message status: Missing message_id")
+            # logger.error("Cannot update message status: Missing message_id")
             return False
 
         message_id_str = str(message_id)
@@ -200,7 +200,8 @@ async def update_message_status(
 
         if not message_exists:
             if DEBUG:
-                logger.info(f"Message {message_id_str} not found for status update")
+                # logger.info(f"Message {message_id_str} not found for status update")
+                pass  # Removed logging
             return False
 
         async with db_semaphore:
@@ -213,12 +214,13 @@ async def update_message_status(
 
             if result.matched_count == 0:
                 if DEBUG:
-                    logger.info(
-                        f"Message {message_id_str} not matched for status update"
-                    )
+                    # logger.info(
+                    #     f"Message {message_id_str} not matched for status update"
+                    # )
+                    pass  # Removed logging
                 return False
 
-            logger.info(f"Updated message {message_id_str} status to {status}")
+            # logger.info(f"Updated message {message_id_str} status to {status}")
 
             # Update cache if message is cached
             if message_id_str in message_cache:
@@ -232,7 +234,7 @@ async def update_message_status(
 
             return True
     except Exception as e:
-        logger.error(f"Error updating message {message_id} status: {e}")
+        # logger.error(f"Error updating message {message_id} status: {e}")
         return False
 
 
@@ -363,18 +365,20 @@ class ConnectionManager:
                             )
                             for i, result in enumerate(results):
                                 if isinstance(result, Exception):
-                                    logger.error(
-                                        f"Error sending batch receipt notification ({i}): {result}"
-                                    )
+                                    # logger.error(
+                                    #     f"Error sending batch receipt notification ({i}): {result}"
+                                    # )
+                                    pass  # Removed logging
 
                     except Exception as e:
-                        logger.error(
-                            f"Error processing read receipt batch for user {user_id}: {e}"
-                        )
+                        # logger.error(
+                        #     f"Error processing read receipt batch for user {user_id}: {e}"
+                        # )
+                        pass  # Removed logging
 
                 await asyncio.sleep(0.1)
             except Exception as e:
-                logger.error(f"Error in read receipt processor: {e}")
+                # logger.error(f"Error in read receipt processor: {e}")
                 await asyncio.sleep(5)
 
     async def connect(self, websocket: WebSocket, user_id: str):
@@ -449,18 +453,19 @@ class ConnectionManager:
     ) -> bool:
         if recipient_id in self.active_connections:
             try:
-                logger.info(
-                    f"[Send Personal] Preparing message for {recipient_id}: {message.dict()}"
-                )  # Log before sending
+                # logger.info(
+                #     f"[Send Personal] Preparing message for {recipient_id}: {message.dict()}"
+                # )  # Log before sending
                 connection = self.active_connections[recipient_id]
                 if connection.client_state == WebSocketState.CONNECTED:
                     # Explicitly serialize here to catch errors and ensure correct format
                     try:
                         message_text = message.json()  # Use Pydantic's .json() method
                     except Exception as json_error:
-                        logger.error(
-                            f"Failed to serialize message for {recipient_id}: {json_error}. Message: {message.dict()}"
-                        )
+                        # logger.error(
+                        #     f"Failed to serialize message for {recipient_id}: {json_error}. Message: {message.dict()}"
+                        # )
+                        pass  # Removed logging
                         return False
 
                     # Pass the JSON string to the lower-level sender
@@ -475,12 +480,14 @@ class ConnectionManager:
                     await self.disconnect(recipient_id)
             except Exception as e:
                 # Log error occurring within send_personal_message itself
-                logger.error(f"Error in send_personal_message to {recipient_id}: {e}")
+                # logger.error(f"Error in send_personal_message to {recipient_id}: {e}")
+                pass  # Removed logging
                 await self.disconnect(recipient_id)
         else:
-            logger.warning(
-                f"[ConnManager] send_personal_message: Recipient {recipient_id} not found in active_connections."
-            )
+            # logger.warning(
+            #     f"[ConnManager] send_personal_message: Recipient {recipient_id} not found in active_connections."
+            # )
+            pass  # Removed logging
             return False
 
     async def update_typing_status(
@@ -624,19 +631,30 @@ async def handle_text_message(
     sender_timezone = connection_manager.get_user_timezone(from_user)
     recipient_timezone = connection_manager.get_user_timezone(to_user)
 
+    # Log raw payload for debugging
+    logger.info(f"Raw payload: {payload}")
+
+    # Extract attachments correctly from either nested payload or direct attachments
+    attachments = payload.get("attachments", [])
+    if not attachments and "payload" in payload and "attachments" in payload["payload"]:
+        attachments = payload["payload"]["attachments"]
+
+    logger.info(f"Processing attachments: {json.dumps(attachments)}")
+
     message_obj = TextMessage(
         from_user=from_user,
         to_user=to_user,
         message_id=payload.get("id"),
         text=payload.get("text", ""),
         timestamp=payload.get("timestamp") or datetime.utcnow().isoformat(),
-        attachments=payload.get("attachments", []),
+        attachments=attachments,
         reply_to=payload.get("reply_to"),
         status=payload.get("status", "sent"),
     )
 
     conversation_id = f"{min(from_user, to_user)}_{max(from_user, to_user)}"
 
+    # Create message document
     message_doc = {
         "_id": message_obj.message_id,
         "conversation_id": conversation_id,
@@ -645,7 +663,8 @@ async def handle_text_message(
         "text": message_obj.text,
         "timestamp": message_obj.timestamp,
         "status": MessageStatus.SENT,
-        "attachments": message_obj.attachments or [],
+        # Store attachments directly at the root level of the document
+        "attachments": attachments,
         "reply_to": message_obj.reply_to,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
@@ -654,7 +673,25 @@ async def handle_text_message(
         "recipient_timezone": recipient_timezone,
     }
 
-    await schedule_message_storage(message_doc)
+    # Ensure we immediately flush to database instead of batching for messages with attachments
+    if attachments:
+        logger.info(f"Message has attachments, immediate database save")
+        logger.info(f"Attachment data structure: {json.dumps(attachments)}")
+        try:
+            messages_collection = get_messages_collection()
+            # Directly insert the document
+            result = await messages_collection.insert_one(message_doc)
+            logger.info(
+                f"Successfully saved message with attachments to database with ID: {result.inserted_id}"
+            )
+            # Also add to cache
+            message_cache[str(message_obj.message_id)] = message_doc
+        except Exception as e:
+            logger.error(f"Error saving message with attachment to database: {e}")
+            # Fall back to batch storage if direct save fails
+            await schedule_message_storage(message_doc)
+    else:
+        await schedule_message_storage(message_doc)
 
     delivered = await connection_manager.send_personal_message(message_obj, to_user)
     status = MessageStatus.DELIVERED if delivered else MessageStatus.SENT
@@ -679,10 +716,19 @@ async def handle_text_message(
 
             if recipient and recipient.get("fcm_token"):
                 sender_name = sender.get("display_name") if sender else "Someone"
+
+                # Use attachment info in notification if text is empty
+                display_text = message_obj.text
+                if not display_text and attachments:
+                    attachment_types = [att.get("type", "file") for att in attachments]
+                    display_text = (
+                        f"Sent {len(attachments)} {', '.join(attachment_types)}"
+                    )
+
                 await send_new_message_notification(
                     recipient["fcm_token"],
                     sender_name,
-                    message_obj.text,
+                    display_text,
                     message_obj.message_id,
                     from_user,
                 )
@@ -698,6 +744,16 @@ async def handle_reply_message(
     sender_timezone = connection_manager.get_user_timezone(from_user)
     recipient_timezone = connection_manager.get_user_timezone(to_user)
 
+    # Log raw payload for debugging
+    logger.info(f"Reply raw payload: {payload}")
+
+    # Extract attachments correctly from either nested payload or direct attachments
+    attachments = payload.get("attachments", [])
+    if not attachments and "payload" in payload and "attachments" in payload["payload"]:
+        attachments = payload["payload"]["attachments"]
+
+    logger.info(f"Reply attachment data structure: {json.dumps(attachments)}")
+
     reply_obj = ReplyMessage(
         from_user=from_user,
         to_user=to_user,
@@ -705,7 +761,7 @@ async def handle_reply_message(
         text=payload.get("text", ""),
         timestamp=payload.get("timestamp") or datetime.utcnow().isoformat(),
         status=payload.get("status", "sent"),
-        attachments=payload.get("attachments", []),
+        attachments=attachments,
         reply_to=payload.get("reply_to"),
     )
 
@@ -718,7 +774,7 @@ async def handle_reply_message(
         "text": reply_obj.text,
         "timestamp": reply_obj.timestamp,
         "status": MessageStatus.SENT,
-        "attachments": reply_obj.attachments or [],
+        "attachments": attachments,
         "reply_to": reply_obj.reply_to,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
@@ -727,13 +783,59 @@ async def handle_reply_message(
         "recipient_timezone": recipient_timezone,
     }
 
-    await schedule_message_storage(message_doc)
+    # Ensure we immediately flush to database instead of batching for messages with attachments
+    if attachments:
+        logger.info(f"Reply has attachments, immediate database save")
+        logger.info(f"Reply attachment data structure: {json.dumps(attachments)}")
+        try:
+            messages_collection = get_messages_collection()
+            # Directly insert the document
+            result = await messages_collection.insert_one(message_doc)
+            logger.info(
+                f"Successfully saved reply with attachments to database with ID: {result.inserted_id}"
+            )
+            # Also add to cache
+            message_cache[str(reply_obj.message_id)] = message_doc
+        except Exception as e:
+            logger.error(f"Error saving reply with attachment to database: {e}")
+            # Fall back to batch storage if direct save fails
+            await schedule_message_storage(message_doc)
+    else:
+        await schedule_message_storage(message_doc)
+
     delivered = await connection_manager.send_personal_message(reply_obj, to_user)
 
     status = MessageStatus.DELIVERED if delivered else MessageStatus.SENT
     await update_message_status(reply_obj.message_id, status)
 
     await broadcast_to_related_connections(reply_obj, from_user, to_user, from_user)
+
+    # Handle notification for undelivered replies
+    if not delivered:
+        try:
+            recipient = await get_cached_user(to_user)
+            sender = await get_cached_user(from_user)
+
+            if recipient and recipient.get("fcm_token"):
+                sender_name = sender.get("display_name") if sender else "Someone"
+
+                # Use attachment info in notification if text is empty
+                display_text = reply_obj.text
+                if not display_text and attachments:
+                    attachment_types = [att.get("type", "file") for att in attachments]
+                    display_text = (
+                        f"Replied with {len(attachments)} {', '.join(attachment_types)}"
+                    )
+
+                await send_new_message_notification(
+                    recipient["fcm_token"],
+                    sender_name,
+                    display_text,
+                    reply_obj.message_id,
+                    from_user,
+                )
+        except Exception as e:
+            logger.error(f"Error sending reply notification: {e}")
 
 
 async def handle_edit_message(
@@ -930,7 +1032,8 @@ async def handle_read_receipt(payload: Dict, from_user: str, to_user: str):
 
         if not message_exists:
             if DEBUG:
-                logger.info(f"Read receipt for non-existent message: {message_id}")
+                # logger.info(f"Read receipt for non-existent message: {message_id}")
+                pass  # Removed logging
             return
 
         # Queue for batch processing instead of immediate processing
@@ -946,12 +1049,13 @@ async def handle_read_receipt(payload: Dict, from_user: str, to_user: str):
             connection_manager.batch_processing_event.set()
 
         # Only log periodically to avoid flooding logs
-        if should_log_read_receipt(from_user, message_id):
-            logger.info(
-                f"Queued read receipt for {message_id} from {from_user} to {to_user}"
-            )
+        # if should_log_read_receipt(from_user, message_id):
+        #     logger.info(
+        #         f"Queued read receipt for {message_id} from {from_user} to {to_user}"
+        #     )
     except Exception as e:
-        logger.error(f"Error handling read receipt: {e}")
+        # logger.error(f"Error handling read receipt: {e}")
+        pass  # Removed logging
 
 
 async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str):
@@ -964,13 +1068,14 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
     )  # This is the original sender (recipient of messages)
 
     if not message_ids or not contact_id:
-        logger.warning("Missing messageIds or contactId in read_receipt_batch")
+        # logger.warning("Missing messageIds or contactId in read_receipt_batch")
         return
 
     if DEBUG:
-        logger.info(
-            f"Processing batch of {len(message_ids)} read receipts from {from_user} for contact {contact_id}"
-        )
+        # logger.info(
+        #     f"Processing batch of {len(message_ids)} read receipts from {from_user} for contact {contact_id}"
+        # )
+        pass  # Removed logging
 
     # Process in chunks to avoid overwhelming the database
     chunk_size = 50  # Process 50 messages at a time
@@ -997,9 +1102,10 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
                 # Log any missing messages at debug level only
                 missing_ids = [msg_id for msg_id in chunk if msg_id not in existing_ids]
                 if missing_ids and DEBUG:
-                    logger.info(
-                        f"Read receipt batch contained non-existent or incorrect recipient messages: {missing_ids}"
-                    )
+                    # logger.info(
+                    #     f"Read receipt batch contained non-existent or incorrect recipient messages: {missing_ids}"
+                    # )
+                    pass  # Removed logging
 
                 # Only update messages that exist
                 if existing_ids:
@@ -1016,16 +1122,18 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
                     valid_messages.extend(existing_ids)
 
         except Exception as e:
-            logger.error(f"Error processing read receipt chunk: {e}")
+            # logger.error(f"Error processing read receipt chunk: {e}")
+            pass  # Removed logging
 
     if DEBUG and total_updated > 0:
-        logger.info(
-            f"Updated {total_updated} of {len(message_ids)} messages to read status for {from_user}"
-        )
+        # logger.info(
+        #     f"Updated {total_updated} of {len(message_ids)} messages to read status for {from_user}"
+        # )
+        pass  # Removed logging
 
     # Only continue with notification if we have valid messages
     if not valid_messages:
-        logger.info(f"No valid messages found in read receipt batch from {from_user}")
+        # logger.info(f"No valid messages found in read receipt batch from {from_user}")
         return
 
     # --- Notification Logic ---
@@ -1069,9 +1177,10 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
         results = await asyncio.gather(*coroutines, return_exceptions=True)
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error(
-                    f"Error sending read receipt batch notification ({i}): {result}"
-                )
+                # logger.error(
+                #     f"Error sending read receipt batch notification ({i}): {result}"
+                # )
+                pass  # Removed logging
 
 
 @websocket_router.websocket("/ws")

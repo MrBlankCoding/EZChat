@@ -66,6 +66,39 @@ class TextMessage(WebSocketMessage):
 
     model_config = {"populate_by_name": True}
 
+    @model_validator(mode="before")
+    @classmethod
+    def extract_payload_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            payload = data.get("payload")
+            if isinstance(payload, dict):
+                # Extract fields from payload if they exist
+                if "id" in payload and "message_id" not in data:
+                    data["message_id"] = payload.get("id")
+                elif "message_id" in payload and "message_id" not in data:
+                    data["message_id"] = payload.get("message_id")
+
+                if "text" in payload and "text" not in data:
+                    data["text"] = payload.get("text")
+
+                if "timestamp" in payload and "timestamp" not in data:
+                    data["timestamp"] = payload.get("timestamp")
+
+                if "status" in payload and "status" not in data:
+                    data["status"] = payload.get("status")
+
+                if "attachments" in payload and "attachments" not in data:
+                    data["attachments"] = payload.get("attachments")
+
+                if "reply_to" in payload and "reply_to" not in data:
+                    data["reply_to"] = payload.get("reply_to")
+
+            # Ensure id parameter can be accessed as message_id
+            if "id" in data and "message_id" not in data:
+                data["message_id"] = data["id"]
+
+        return data
+
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
         # Move payload-related fields under payload
@@ -156,12 +189,27 @@ class PresenceMessage(WebSocketMessage):
         d["payload"] = {"status": d.pop("status"), "lastSeen": d.pop("last_seen")}
         return d
 
+
 class ReplyMessage(TextMessage):
     """
     Reply to a message.
     """
 
     type: WebSocketMessageType = WebSocketMessageType.REPLY
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_payload_fields(cls, data: Any) -> Any:
+        # First apply the parent class validator
+        data = TextMessage.extract_payload_fields(data)
+
+        if isinstance(data, dict):
+            payload = data.get("payload", {})
+            # Handle reply_to field which might be differently named in payload
+            if "replyTo" in payload and "reply_to" not in data:
+                data["reply_to"] = payload.get("replyTo")
+
+        return data
 
 
 class EditMessage(WebSocketMessage):

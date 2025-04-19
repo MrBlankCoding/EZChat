@@ -8,6 +8,7 @@ import {
 } from "@tauri-apps/api/notification";
 import { useContactsStore } from "../stores/contactsStore";
 import { Message } from "../stores/chatStore";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 
@@ -32,6 +33,14 @@ interface WebSocketMessage {
   to?: string | null;
   payload: any;
   [key: string]: any;
+}
+
+interface FileAttachment {
+  type: string;
+  url: string;
+  name: string;
+  size?: number;
+  fileType?: string;
 }
 
 class WebSocketService {
@@ -239,6 +248,29 @@ class WebSocketService {
   }
 
   private transformMessage(data: WebSocketMessage) {
+    const attachments = (data.payload?.attachments || data.attachments || []).map((att: any) => {
+      // Ensure attachments follow our FileAttachment interface
+      if (typeof att === 'object' && att !== null) {
+        // Determine the primary type (image, video, audio, file) from fileType or MIME type
+        let type = att.type || 'file';
+        const fileType = att.fileType || '';
+        
+        // If fileType is a MIME type, extract the primary type
+        if (fileType && fileType.includes('/')) {
+          type = fileType.split('/')[0];
+        }
+        
+        return {
+          type: type,
+          url: att.url || '',
+          name: att.name || 'Unknown file',
+          size: att.size,
+          fileType: att.fileType
+        };
+      }
+      return att;
+    });
+    
     return {
       id: data.payload?.id || data.payload?._id || data.payload?.message_id || 
           data.message_id || data._id || `msg-${Date.now()}`,
@@ -253,7 +285,7 @@ class WebSocketService {
                  data.timestamp || data.created_at || new Date().toISOString(),
       status: (data.payload?.status as 'sent' | 'delivered' | 'read') || 
               (data.status as 'sent' | 'delivered' | 'read') || 'sent',
-      attachments: data.payload?.attachments || data.attachments || [],
+      attachments: attachments,
       replyTo: data.payload?.reply_to || data.payload?.replyTo || data.reply_to || data.replyTo,
       isEdited: data.payload?.is_edited || data.payload?.isEdited || false,
       isDeleted: data.payload?.is_deleted || data.payload?.isDeleted || false,
@@ -364,7 +396,7 @@ class WebSocketService {
           const messageId_single = String(data.message_id || data.payload?.messageId || '');
           
           if (originalSenderId_single && messageId_single) {
-            console.log(`[WS Service] Handling READ_RECEIPT for msg ${messageId_single} from reader ${readerId_single} for sender ${originalSenderId_single}`);
+            // console.log(`[WS Service] Handling READ_RECEIPT for msg ${messageId_single} from reader ${readerId_single} for sender ${originalSenderId_single}`);
             // Use originalSenderId_single as the contactId to update the correct conversation
             chatStore.updateMessageStatus(messageId_single, originalSenderId_single, 'read');
             this.notifyEventHandlers(); // Notify generic handlers
@@ -380,7 +412,7 @@ class WebSocketService {
           const messageIds_batch = (data.message_ids || data.payload?.messageIds || []) as string[];
           
           if (contactId_batch && messageIds_batch.length > 0) {
-            console.log(`[WS Service] Handling READ_RECEIPT_BATCH for ${messageIds_batch.length} messages from reader ${readerId_batch} for contact ${contactId_batch}`);
+            // console.log(`[WS Service] Handling READ_RECEIPT_BATCH for ${messageIds_batch.length} messages from reader ${readerId_batch} for contact ${contactId_batch}`);
             // Use contactId_batch to update the correct conversation in the store
             messageIds_batch.forEach(msgId => {
               chatStore.updateMessageStatus(String(msgId), contactId_batch, 'read');
@@ -575,19 +607,94 @@ class WebSocketService {
     }
   }
   
-  sendMessage(contactId: string, text: string, attachments: any[] = []) {
+  /**
+   * Upload file to Firebase Storage and return the download URL
+   * @param file File to upload
+   * @returns Promise with download URL
+   */
+  async uploadFileToStorage(file: File): Promise<FileAttachment> {
+    const { user } = useAuthStore.getState();
+    if (!user) {
+      throw new Error('User not authenticated');
+    }
+    
+    try {
+      // Initialize Firebase Storage
+      const firebaseApp = (await import('./firebaseConfig')).default;
+      const storage = getStorage(firebaseApp);
+      
+      // Create a unique file path: users/{userId}/uploads/{timestamp}_{filename}
+      const timestamp = Date.now();
+      const fileName = `${timestamp}_${file.name}`;
+      const filePath = `users/${user.id}/uploads/${fileName}`;
+      const storageRef = ref(storage, filePath);
+      
+      // Upload the file
+      await uploadBytes(storageRef, file);
+      
+      // Get the download URL
+      const downloadURL = await getDownloadURL(storageRef);
+      
+      return {
+        type: 'file',
+        url: downloadURL,
+        name: file.name,
+        size: file.size,
+        fileType: file.type
+      };
+    } catch (error) {
+      console.error('Error uploading file to Firebase Storage:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Upload multiple files to Firebase Storage
+   * @param files Array of files to upload
+   * @returns Promise with array of download URLs and metadata
+   */
+  async uploadFilesToStorage(files: File[]): Promise<FileAttachment[]> {
+    const uploadPromises = files.map(file => this.uploadFileToStorage(file));
+    return Promise.all(uploadPromises);
+  }
+  
+  // Modified to handle file uploads
+  async sendMessage(contactId: string, text: string, attachments: (File | FileAttachment)[] = []) {
     const { user } = useAuthStore.getState();
     if (!user) return;
     
     const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const timestamp = new Date().toISOString();
     
+    // Process attachments - upload files and collect metadata
+    let processedAttachments: FileAttachment[] = [];
+    
+    if (attachments.length > 0) {
+      try {
+        // Separate Files from already processed FileAttachments
+        const filesToUpload = attachments.filter(att => att instanceof File) as File[];
+        const existingAttachments = attachments.filter(att => !(att instanceof File)) as FileAttachment[];
+        
+        // Upload new files if any
+        if (filesToUpload.length > 0) {
+          const uploadedFiles = await this.uploadFilesToStorage(filesToUpload);
+          processedAttachments = [...existingAttachments, ...uploadedFiles];
+        } else {
+          processedAttachments = existingAttachments;
+        }
+      } catch (error) {
+        console.error('Error processing attachments:', error);
+        // Continue with sending the message but without attachments
+        processedAttachments = [];
+      }
+    }
+    
     const message = {
       id: messageId,
       senderId: user.id,
       receiverId: contactId,
       text,
-      attachments,
+      attachments: processedAttachments,
       timestamp,
       status: 'sent' as const
     };
@@ -603,7 +710,7 @@ class WebSocketService {
         text,
         timestamp,
         status: 'sent',
-        attachments
+        attachments: processedAttachments
       }
     });
     
@@ -841,7 +948,8 @@ class WebSocketService {
     return true;
   }
   
-  sendReply(contactId: string, text: string, replyToMessageId: string, attachments: any[] = []) {
+  // Modified to handle file uploads
+  async sendReply(contactId: string, text: string, replyToMessageId: string, attachments: (File | FileAttachment)[] = []) {
     if (!this.isConnected()) {
       return undefined;
     }
@@ -853,6 +961,29 @@ class WebSocketService {
     
     const messageId = `tmp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
+    // Process attachments - upload files and collect metadata
+    let processedAttachments: FileAttachment[] = [];
+    
+    if (attachments.length > 0) {
+      try {
+        // Separate Files from already processed FileAttachments
+        const filesToUpload = attachments.filter(att => att instanceof File) as File[];
+        const existingAttachments = attachments.filter(att => !(att instanceof File)) as FileAttachment[];
+        
+        // Upload new files if any
+        if (filesToUpload.length > 0) {
+          const uploadedFiles = await this.uploadFilesToStorage(filesToUpload);
+          processedAttachments = [...existingAttachments, ...uploadedFiles];
+        } else {
+          processedAttachments = existingAttachments;
+        }
+      } catch (error) {
+        console.error('Error processing attachments:', error);
+        // Continue with sending the message but without attachments
+        processedAttachments = [];
+      }
+    }
+    
     const replyMsg = {
       type: MessageType.REPLY,
       from: user.id,
@@ -862,7 +993,7 @@ class WebSocketService {
         text,
         timestamp: new Date().toISOString(),
         status: 'sent',
-        attachments,
+        attachments: processedAttachments,
         reply_to: replyToMessageId
       }
     };
@@ -874,7 +1005,7 @@ class WebSocketService {
       text,
       timestamp: new Date().toISOString(),
       status: 'sent' as const,
-      attachments,
+      attachments: processedAttachments,
       replyTo: replyToMessageId
     };
     
@@ -996,7 +1127,7 @@ class WebSocketService {
     const { user } = useAuthStore.getState();
     if (!user) return;
     
-    console.log(`[WS] Sending presence update: ${status}`);
+    // console.log(`[WS] Sending presence update: ${status}`);
     
     this.send({
       type: MessageType.PRESENCE,

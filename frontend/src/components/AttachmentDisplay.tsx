@@ -1,37 +1,87 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Attachment } from '../types';
+import { ImageModal } from './ui';
+import { useChatStore } from '../stores/chatStore';
 
 interface AttachmentDisplayProps {
   attachment: Attachment;
+  messageId?: string;
   className?: string;
 }
 
-export const AttachmentDisplay: React.FC<AttachmentDisplayProps> = ({ attachment, className = '' }) => {
-  const formatFileSize = (bytes: number): string => {
+export const AttachmentDisplay: React.FC<AttachmentDisplayProps> = ({ 
+  attachment, 
+  messageId,
+  className = '' 
+}) => {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const { getAllImageAttachments } = useChatStore();
+  
+  const formatFileSize = (bytes: number | undefined): string => {
+    if (bytes === undefined) return 'Unknown size';
     if (bytes < 1024) return bytes + ' bytes';
     else if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     else if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     else return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
   };
 
-  if (attachment.type === 'image') {
+  // Guard against undefined type
+  const attachmentType = attachment.type || 'file';
+  
+  // Handle FileAttachment objects where type could be just 'image', 'video', etc.
+  // or full MIME types like 'image/jpeg', 'video/mp4'
+  const isImage = attachmentType === 'image' || attachmentType.startsWith('image/');
+  const isVideo = attachmentType === 'video' || attachmentType.startsWith('video/');
+  const isAudio = attachmentType === 'audio' || attachmentType.startsWith('audio/');
+  
+  // Use fileType for more specific type detection if available
+  const fileType = attachment.fileType || '';
+  const isImageFromMimeType = fileType && fileType.startsWith('image/');
+  const isVideoFromMimeType = fileType && fileType.startsWith('video/');
+  const isAudioFromMimeType = fileType && fileType.startsWith('audio/');
+
+  // Get modal images only when needed
+  const getModalImages = () => {
+    const allImages = getAllImageAttachments();
+    return allImages.length > 0 ? 
+      (allImages.some(img => img.id === attachment.id || img.url === attachment.url)
+        ? allImages
+        : [attachment, ...allImages]) : 
+      [attachment];
+  };
+
+  if (isImage || isImageFromMimeType) {
     return (
-      <div className={`mb-2 rounded-xl overflow-hidden shadow-md group ${className}`}>
-        <div className="relative">
-          <img
-            src={attachment.url}
-            alt={attachment.name}
-            className="max-w-xs max-h-60 object-contain w-full transition-transform group-hover:scale-[0.98]"
-            loading="lazy"
+      <>
+        <div 
+          className={`mb-2 rounded-xl overflow-hidden shadow-md group ${className} cursor-pointer`}
+          onClick={() => setIsModalOpen(true)}
+        >
+          <div className="relative">
+            <img
+              src={attachment.url}
+              alt={attachment.name}
+              className="max-w-xs max-h-60 object-contain w-full transition-transform group-hover:scale-[0.98]"
+              loading="lazy"
+            />
+            <div className="absolute inset-0 bg-black opacity-0 group-hover:opacity-10 transition-opacity" />
+          </div>
+          <div className="text-xs px-3 py-1.5 bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 font-medium truncate">
+            {attachment.name} ({formatFileSize(attachment.size)})
+          </div>
+        </div>
+        
+        {isModalOpen && (
+          <ImageModal
+            isOpen={isModalOpen}
+            onClose={() => setIsModalOpen(false)}
+            currentImage={attachment}
+            images={getModalImages()}
           />
-          <div className="absolute inset-0 bg-black opacity-0 group-hover:opacity-10 transition-opacity" />
-        </div>
-        <div className="text-xs px-3 py-1.5 bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 font-medium truncate">
-          {attachment.name} ({formatFileSize(attachment.size)})
-        </div>
-      </div>
+        )}
+      </>
     );
-  } else if (attachment.type === 'video') {
+  } else if (isVideo || isVideoFromMimeType) {
     return (
       <div className={`mb-2 rounded-xl overflow-hidden shadow-md ${className}`}>
         <video
@@ -44,7 +94,7 @@ export const AttachmentDisplay: React.FC<AttachmentDisplayProps> = ({ attachment
         </div>
       </div>
     );
-  } else if (attachment.type === 'audio') {
+  } else if (isAudio || isAudioFromMimeType) {
     return (
       <div className={`mb-2 rounded-xl overflow-hidden shadow-md bg-gray-50 dark:bg-gray-800 p-3 ${className}`}>
         <audio src={attachment.url} controls className="max-w-xs w-full" />
@@ -54,6 +104,7 @@ export const AttachmentDisplay: React.FC<AttachmentDisplayProps> = ({ attachment
       </div>
     );
   } else {
+    // File attachment or unknown type
     return (
       <a
         href={attachment.url}

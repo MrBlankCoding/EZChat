@@ -25,7 +25,7 @@ class PresenceManager {
   initialize(): void {
     if (this.initialized) return;
     
-    console.log('[Presence] Initializing presence manager');
+    // console.log('[Presence] Initializing presence manager');
     this.initialized = true;
     
     // Send initial presence update
@@ -58,7 +58,7 @@ class PresenceManager {
       // Test the WebSocket connection
       websocketService.testConnection().then(connected => {
         if (!connected) {
-          console.log('[Presence] WebSocket connection test failed, attempting to reconnect');
+          // console.log('[Presence] WebSocket connection test failed, attempting to reconnect');
           websocketService.connect().then(() => {
             // Force resend presence after reconnection
             this.updatePresence(this.currentState, true);
@@ -72,7 +72,7 @@ class PresenceManager {
   
   // Clean up resources
   cleanup(): void {
-    console.log('[Presence] Cleaning up presence manager');
+    // console.log('[Presence] Cleaning up presence manager');
     
     if (this.presenceInterval) {
       clearInterval(this.presenceInterval);
@@ -185,7 +185,7 @@ class PresenceManager {
     // AND respect the minimum update interval to prevent spamming
     if ((force || prevState !== state) && 
         (force || timeSinceLastUpdate > this.MIN_PRESENCE_UPDATE_INTERVAL)) {
-      console.log(`[Presence] ${force ? 'Forcing' : 'Updating'} state from ${prevState} to ${state}`);
+      // console.log(`[Presence] ${force ? 'Forcing' : 'Updating'} state from ${prevState} to ${state}`);
       
       // Set the timestamp before sending to prevent multiple rapid updates
       this.lastPresenceUpdate = now;
@@ -194,7 +194,7 @@ class PresenceManager {
       if (websocketService.isConnected()) {
         websocketService.sendPresenceUpdate(state);
       } else {
-        console.log('[Presence] WebSocket not connected, connecting before sending presence');
+        // console.log('[Presence] WebSocket not connected, connecting before sending presence');
         websocketService.connect().then(() => {
           websocketService.sendPresenceUpdate(state);
         }).catch(error => {
@@ -249,7 +249,7 @@ class PresenceManager {
       console.warn('[Presence] Could not update chat store:', error);
     }
     
-    console.log(`[Presence] Updated contact ${contactId} status to ${status}`);
+    // console.log(`[Presence] Updated contact ${contactId} status to ${status}`);
   }
 }
 
