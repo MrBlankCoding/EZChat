@@ -34,6 +34,18 @@ from .contact import (
     ContactStatus,
     ContactWithUserInfo,
 )
+from .group import (
+    GroupBase,
+    GroupCreate,
+    GroupUpdate,
+    GroupMember,
+    GroupInDB,
+    Group,
+    GroupMemberInfo,
+    GroupDetails,
+    AddGroupMember,
+    UpdateGroupMember,
+)
 
 # Export all schemas
 __all__ = [
@@ -69,4 +81,15 @@ __all__ = [
     "ContactUpdate",
     "ContactStatus",
     "ContactWithUserInfo",
+    # Group schemas
+    "GroupBase",
+    "GroupCreate",
+    "GroupUpdate",
+    "GroupMember",
+    "GroupInDB",
+    "Group",
+    "GroupMemberInfo",
+    "GroupDetails",
+    "AddGroupMember",
+    "UpdateGroupMember",
 ]

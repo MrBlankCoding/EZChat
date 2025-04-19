@@ -19,6 +19,7 @@ load_dotenv()
 from api.routes.user import router as user_router
 from api.routes.chat import router as chat_router
 from api.routes.contact import router as contact_router
+from api.groups import router as group_router
 from websocket.manager import websocket_router
 from db.mongodb import connect_to_mongodb, close_mongodb_connection
 
@@ -167,6 +168,7 @@ async def add_cors_headers(request: Request, call_next):
 app.include_router(user_router, prefix="/api/user", tags=["Users"])
 app.include_router(chat_router, prefix="/api/chats", tags=["Chats"])
 app.include_router(contact_router, prefix="/api/contacts", tags=["Contacts"])
+app.include_router(group_router, prefix="/api/groups", tags=["Groups"])
 app.include_router(websocket_router)
 
 

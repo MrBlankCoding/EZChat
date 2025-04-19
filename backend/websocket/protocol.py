@@ -35,6 +35,7 @@ class WebSocketMessage(BaseModel):
     type: WebSocketMessageType
     from_user: str = Field(..., alias="from")
     to_user: Optional[str] = Field(None, alias="to")
+    group_id: Optional[str] = None
 
     model_config = {"populate_by_name": True}
 
@@ -100,20 +101,34 @@ class TextMessage(WebSocketMessage):
         return data
 
     def dict(self, *args, **kwargs):
-        d = super().dict(*args, **kwargs)
-        # Move payload-related fields under payload
+        # Pydantic v2: model_dump() preferred over dict()
+        # Call super().model_dump() to get fields from WebSocketMessage including group_id
+        d = super().model_dump(
+            *args, by_alias=True, **kwargs
+        )  # Use model_dump and by_alias=True
+
+        # Fields specific to TextMessage that go into payload
         payload = {
-            "id": d.pop("id", None),
+            "id": d.pop("id", None),  # Use alias 'id'
             "text": d.pop("text", None),
             "timestamp": d.pop("timestamp", None),
             "status": d.pop("status", None),
         }
-        if "attachments" in d:
-            payload["attachments"] = d.pop("attachments")
-        if "reply_to" in d and d["reply_to"]:
-            payload["reply_to"] = d.pop("reply_to")
+        # Conditionally add fields if they exist in the model instance
+        if hasattr(self, "attachments") and self.attachments:
+            payload["attachments"] = d.pop("attachments", None)
+        if hasattr(self, "reply_to") and self.reply_to:
+            payload["reply_to"] = d.pop("reply_to", None)
+
         d["payload"] = payload
+        # 'type', 'from', 'to', 'group_id' should already be in d from super().model_dump()
         return d
+
+    def json(self, *args, **kwargs):
+        # Pydantic v2: model_dump_json() preferred over json()
+        # Ensure consistent structure with dict method
+        kwargs.setdefault("by_alias", True)
+        return super().model_dump_json(*args, **kwargs)
 
 
 class TypingMessage(WebSocketMessage):

@@ -3,7 +3,8 @@ import logging
 import asyncio
 import time
 import os
-from typing import Dict, Optional, List, Any, Tuple
+import uuid
+from typing import Dict, Optional, List, Any, Tuple, Set
 from datetime import datetime
 from functools import lru_cache
 from cachetools import TTLCache
@@ -11,7 +12,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPExcept
 from starlette.websockets import WebSocketState
 from websockets.exceptions import ConnectionClosed
 
-from db.mongodb import get_messages_collection, get_users_collection
+from db.mongodb import (
+    get_messages_collection,
+    get_users_collection,
+    get_user_groups,
+    get_group_members,
+    is_user_group_member,
+)
 from auth.firebase import FirebaseToken
 from schemas.message import MessageStatus
 from utils.rate_limiter import RateLimiter
@@ -63,6 +70,12 @@ db_semaphore = asyncio.Semaphore(DB_CONCURRENCY_LIMIT)
 messages_to_store = []
 last_db_flush = time.time()
 db_flush_lock = asyncio.Lock()
+
+
+# Helper function for conversation IDs
+def generate_conversation_id(user1: str, user2: str) -> str:
+    """Generates a consistent conversation ID for two users."""
+    return f"{min(user1, user2)}_{max(user1, user2)}"
 
 
 def logger_info(message, force=False):
@@ -124,18 +137,37 @@ async def verify_token(token: str) -> FirebaseToken:
 
 
 def validate_message(message_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """Validates required fields for a message document before DB insertion."""
+    # Common required fields
     required_fields = [
         "_id",
         "sender_id",
-        "recipient_id",
-        "text",
         "timestamp",
+        "created_at",
+        "updated_at",
+        "type",
+        # Conversation ID is now always required (can be group_id for group chats)
         "conversation_id",
     ]
 
     for field in required_fields:
-        if not message_data.get(field):
+        if message_data.get(field) is None:  # Check for None explicitly
             return False, f"Missing required field: {field}"
+
+    # Specific validation for direct vs group messages
+    recipient_id = message_data.get("recipient_id")
+    group_id = message_data.get("group_id")
+
+    if recipient_id is not None and group_id is not None:
+        return False, "Message cannot have both recipient_id and group_id"
+
+    if recipient_id is None and group_id is None:
+        return False, "Message must have either recipient_id or group_id"
+
+    # Text or attachments check (depending on your message types)
+    # if message_data.get("type") == WebSocketMessageType.MESSAGE.value:
+    #     if not message_data.get("text") and not message_data.get("attachments"):
+    #         return False, "Text message must contain text or attachments"
 
     return True, None
 
@@ -245,6 +277,9 @@ class ConnectionManager:
         self.typing_status: Dict[Tuple[str, str], datetime] = {}
         self.user_timezones: Dict[str, str] = {}
         self.last_heartbeat: Dict[str, float] = {}
+        self.group_subscriptions: Dict[str, Set[str]] = (
+            {}
+        )  # Maps user_id to Set[group_id]
         self.batch_processing_event = asyncio.Event()
         self.batch_processing_task = None
 
@@ -382,30 +417,72 @@ class ConnectionManager:
                 await asyncio.sleep(5)
 
     async def connect(self, websocket: WebSocket, user_id: str):
+        """Connects a user and subscribes them to their groups."""
         await websocket.accept()
         self.active_connections[user_id] = websocket
-        self.user_statuses[user_id] = "online"
-        self.last_heartbeat[user_id] = time.time()
+        self.update_heartbeat(user_id)
         logger.info(
-            f"User {user_id} connected. Total active connections: {len(self.active_connections)}"
+            f"User {user_id} connected. Total connections: {len(self.active_connections)}"
         )
-        await self.broadcast_presence(user_id, "online")
 
-        if self.batch_processing_task is None or self.batch_processing_task.done():
-            await self.start_background_tasks()
+        # Fetch user's groups and subscribe
+        try:
+            user_groups = await get_user_groups(user_id)
+            self.group_subscriptions[user_id] = {group.id for group in user_groups}
+            logger.info(
+                f"User {user_id} subscribed to {len(self.group_subscriptions.get(user_id, set()))} groups."
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch or subscribe groups for user {user_id}: {e}")
+            self.group_subscriptions[user_id] = set()  # Ensure entry exists
+
+        # Set initial status and broadcast presence
+        self.user_statuses[user_id] = "online"  # Set status directly
+        await self.broadcast_presence(user_id, "online")  # Broadcast presence
+
+        # Start batch processing task if not already running
+        if self.batch_processing_task is None:
+            self.batch_processing_task = asyncio.create_task(
+                self.process_read_receipts()
+            )
 
     async def disconnect(self, user_id: str):
+        """Disconnects a user and cleans up their subscriptions."""
         if user_id in self.active_connections:
-            del self.active_connections[user_id]
-            self.user_statuses[user_id] = "offline"
-            if user_id in self.last_heartbeat:
-                del self.last_heartbeat[user_id]
+            connection = self.active_connections.pop(user_id, None)
+            self.group_subscriptions.pop(user_id, None)  # Remove group subscriptions
+            self.last_heartbeat.pop(user_id, None)
+            self.user_statuses.pop(user_id, None)
+            self.user_timezones.pop(user_id, None)
+            # Clear typing status involving this user
+            keys_to_remove = [k for k in self.typing_status if user_id in k]
+            for key in keys_to_remove:
+                self.typing_status.pop(key, None)
+
             logger.info(
                 f"User {user_id} disconnected. Remaining connections: {len(self.active_connections)}"
             )
             await self.broadcast_presence(user_id, "offline")
-        else:
-            pass
+
+            # Close the WebSocket connection if it's still open
+            if connection and connection.client_state != WebSocketState.DISCONNECTED:
+                try:
+                    await connection.close()
+                    logger.info(f"Closed WebSocket connection for user {user_id}")
+                except RuntimeError as e:
+                    # This can happen if the connection is already closing
+                    logger.warning(f"Error closing WebSocket for {user_id}: {e}")
+
+            # Stop batch processing if no connections left
+            if not self.active_connections and self.batch_processing_task:
+                self.batch_processing_event.set()
+                self.batch_processing_task.cancel()
+                try:
+                    await self.batch_processing_task
+                except asyncio.CancelledError:
+                    pass
+                self.batch_processing_task = None
+                logger.info("Stopped batch processing task.")
 
     async def broadcast_presence(self, user_id: str, status: str):
         message = PresenceMessage(
@@ -430,65 +507,94 @@ class ConnectionManager:
     async def _send_message_to_connection(
         self, connection: WebSocket, message_text: str, recipient_id: str
     ):
-        try:
-            if connection.client_state == WebSocketState.CONNECTED:
-                logger.info(
-                    f"[Broadcast Send] Attempting to send to {recipient_id}: {message_text[:200]}{'...' if len(message_text) > 200 else ''}"
-                )
+        """Internal helper to send a raw message string to a WebSocket connection."""
+        if connection.client_state == WebSocketState.CONNECTED:
+            try:
                 await connection.send_text(message_text)
-                return True
-            else:
-                logger.info(
-                    f"[Broadcast Send] Connection state not CONNECTED for {recipient_id}, disconnecting."
-                )
-                await self.disconnect(recipient_id)
-                return False
-        except Exception as e:
-            logger.error(f"Error sending message to {recipient_id}: {e}")
-            await self.disconnect(recipient_id)
-            return False
+                # logger_info(f"Sent message to {recipient_id}") # Reduced logging
+            except (ConnectionClosed, RuntimeError) as e:
+                # logger_info(f"Failed to send message to {recipient_id}: Connection closed or error: {e}")
+                # Schedule disconnection for this user if connection is broken
+                asyncio.create_task(self.disconnect(recipient_id))
+            except Exception as e:
+                logger.error(f"Unexpected error sending message to {recipient_id}: {e}")
+                asyncio.create_task(self.disconnect(recipient_id))
+        # else:
+        # logger_info(f"Skipped sending to {recipient_id}: WebSocket not connected.")
 
     async def send_personal_message(
         self, message: WebSocketMessage, recipient_id: str
     ) -> bool:
-        if recipient_id in self.active_connections:
+        """Sends a message to a specific user if they are connected."""
+        connection = self.active_connections.get(recipient_id)
+        if connection:
             try:
-                # logger.info(
-                #     f"[Send Personal] Preparing message for {recipient_id}: {message.dict()}"
-                # )  # Log before sending
-                connection = self.active_connections[recipient_id]
-                if connection.client_state == WebSocketState.CONNECTED:
-                    # Explicitly serialize here to catch errors and ensure correct format
-                    try:
-                        message_text = message.json()  # Use Pydantic's .json() method
-                    except Exception as json_error:
-                        # logger.error(
-                        #     f"Failed to serialize message for {recipient_id}: {json_error}. Message: {message.dict()}"
-                        # )
-                        pass  # Removed logging
-                        return False
-
-                    # Pass the JSON string to the lower-level sender
-                    await self._send_message_to_connection(
-                        connection, message_text, recipient_id
-                    )
-                    return True
-                else:
-                    logger.info(
-                        f"[Send Personal] Connection state not CONNECTED for {recipient_id}, disconnecting."
-                    )
-                    await self.disconnect(recipient_id)
+                message_str = (
+                    message.model_dump_json()
+                )  # Use model_dump_json for Pydantic v2
+                await self._send_message_to_connection(
+                    connection, message_str, recipient_id
+                )
+                return True
             except Exception as e:
-                # Log error occurring within send_personal_message itself
-                # logger.error(f"Error in send_personal_message to {recipient_id}: {e}")
-                pass  # Removed logging
-                await self.disconnect(recipient_id)
+                logger.error(
+                    f"Error serializing/sending personal message to {recipient_id}: {e}"
+                )
+                return False
         else:
-            # logger.warning(
-            #     f"[ConnManager] send_personal_message: Recipient {recipient_id} not found in active_connections."
-            # )
-            pass  # Removed logging
+            # logger_info(f"User {recipient_id} not connected for personal message.")
             return False
+
+    async def send_group_message(
+        self, message: WebSocketMessage, group_id: str, sender_id: str
+    ):
+        """Sends a message to all connected members of a group, except the sender."""
+        logger.info(
+            f"Attempting to send group message to group {group_id} from {sender_id}"
+        )
+        try:
+            # Fetch group members (consider caching this if groups are large/static)
+            members = await get_group_members(group_id)
+            if not members:
+                logger.warning(
+                    f"No members found for group {group_id} or group doesn't exist."
+                )
+                return
+
+            member_ids = {member.user_id for member in members}
+            logger.info(f"Group {group_id} has members: {member_ids}")
+
+            message_str = message.model_dump_json()  # Serialize once
+            send_tasks = []
+
+            for member_id in member_ids:
+                if member_id == sender_id:
+                    continue  # Don't send back to sender
+
+                connection = self.active_connections.get(member_id)
+                if connection:
+                    # logger.info(f"Queueing send to group member: {member_id}")
+                    # Use the internal helper which handles exceptions
+                    send_tasks.append(
+                        self._send_message_to_connection(
+                            connection, message_str, member_id
+                        )
+                    )
+                # else:
+                # logger_info(f"Group member {member_id} is offline.")
+
+            if send_tasks:
+                logger.info(
+                    f"Sending message to {len(send_tasks)} online members of group {group_id}"
+                )
+                await asyncio.gather(*send_tasks)  # Send concurrently
+            else:
+                logger.info(
+                    f"No online members (excluding sender) found for group {group_id}"
+                )
+
+        except Exception as e:
+            logger.error(f"Error sending group message to group {group_id}: {e}")
 
     async def update_typing_status(
         self, from_user: str, to_user: str, is_typing: bool
@@ -559,9 +665,6 @@ class ConnectionManager:
             logger.error(f"Error storing timezone in database: {e}")
 
 
-connection_manager = ConnectionManager()
-
-
 async def broadcast_to_related_connections(
     message: WebSocketMessage,
     from_user: str,  # The user ID of the sender of the original message/action
@@ -623,384 +726,428 @@ async def broadcast_to_related_connections(
         )
 
 
+# Instantiate the manager *after* the class definition
+connection_manager = ConnectionManager()
+
+# --- WebSocket Handlers ---
+
+
 async def handle_text_message(
     payload: Dict, from_user: str, to_user: str, websocket: WebSocket
 ):
-    logger.info(f"Handling text message from {from_user} to {to_user}")
+    # Validate payload
+    if not payload.get("text"):
+        # logger.warning(f"Received text message from {from_user} with no text payload")
+        return
 
-    sender_timezone = connection_manager.get_user_timezone(from_user)
-    recipient_timezone = connection_manager.get_user_timezone(to_user)
+    message_id = payload.get("_id", str(uuid.uuid4()))
+    conversation_id = payload.get("conversation_id")
+    text = payload["text"]
+    timestamp_str = payload.get("timestamp", datetime.utcnow().isoformat())
+    timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
 
-    # Log raw payload for debugging
-    logger.info(f"Raw payload: {payload}")
+    # --- Group Chat Logic --- >
+    group_id = payload.get("group_id")
+    is_group_message = bool(group_id)
 
-    # Extract attachments correctly from either nested payload or direct attachments
-    attachments = payload.get("attachments", [])
-    if not attachments and "payload" in payload and "attachments" in payload["payload"]:
-        attachments = payload["payload"]["attachments"]
+    if is_group_message:
+        recipient_id = None
+        is_member = await is_user_group_member(group_id, from_user)
+        if not is_member:
+            logger.warning(f"User {from_user} not member of group {group_id}.")
+            error_msg = ErrorMessage(
+                error="You are not a member of this group.", code="NOT_MEMBER"
+            )
+            await connection_manager.send_personal_message(error_msg, from_user)
+            return
+        logger.info(f"Processing group message from {from_user} to group {group_id}")
+        conversation_id = group_id  # Use group_id as conversation_id
+    else:
+        recipient_id = to_user
+        if not recipient_id:
+            logger.warning(f"Direct message from {from_user} missing recipient_id")
+            error_msg = ErrorMessage(
+                error="Recipient ID missing.", code="MISSING_RECIPIENT"
+            )
+            await connection_manager.send_personal_message(error_msg, from_user)
+            return
+        if not conversation_id:
+            conversation_id = generate_conversation_id(from_user, recipient_id)
+        logger.info(f"Processing direct message from {from_user} to {recipient_id}")
+    # < --- End Group Chat Logic ---
 
-    logger.info(f"Processing attachments: {json.dumps(attachments)}")
-
-    message_obj = TextMessage(
-        from_user=from_user,
-        to_user=to_user,
-        message_id=payload.get("id"),
-        text=payload.get("text", ""),
-        timestamp=payload.get("timestamp") or datetime.utcnow().isoformat(),
-        attachments=attachments,
-        reply_to=payload.get("reply_to"),
-        status=payload.get("status", "sent"),
-    )
-
-    conversation_id = f"{min(from_user, to_user)}_{max(from_user, to_user)}"
-
-    # Create message document
+    # Create message document for DB
     message_doc = {
-        "_id": message_obj.message_id,
-        "conversation_id": conversation_id,
+        "_id": message_id,
         "sender_id": from_user,
-        "recipient_id": to_user,
-        "text": message_obj.text,
-        "timestamp": message_obj.timestamp,
-        "status": MessageStatus.SENT,
-        # Store attachments directly at the root level of the document
-        "attachments": attachments,
-        "reply_to": message_obj.reply_to,
+        "recipient_id": recipient_id,
+        "group_id": group_id,
+        "conversation_id": conversation_id,
+        "text": text,
+        "timestamp": timestamp,  # Datetime object for DB
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
-        "type": "message",
-        "sender_timezone": sender_timezone,
-        "recipient_timezone": recipient_timezone,
+        "status": MessageStatus.SENT,
+        "type": WebSocketMessageType.MESSAGE.value,  # Corrected type
+        # attachments? reply_to?
     }
 
-    # Ensure we immediately flush to database instead of batching for messages with attachments
-    if attachments:
-        logger.info(f"Message has attachments, immediate database save")
-        logger.info(f"Attachment data structure: {json.dumps(attachments)}")
-        try:
-            messages_collection = get_messages_collection()
-            # Directly insert the document
-            result = await messages_collection.insert_one(message_doc)
-            logger.info(
-                f"Successfully saved message with attachments to database with ID: {result.inserted_id}"
-            )
-            # Also add to cache
-            message_cache[str(message_obj.message_id)] = message_doc
-        except Exception as e:
-            logger.error(f"Error saving message with attachment to database: {e}")
-            # Fall back to batch storage if direct save fails
-            await schedule_message_storage(message_doc)
-    else:
-        await schedule_message_storage(message_doc)
+    # Validate required fields (validate_message might need update)
+    is_valid, error = validate_message(message_doc)
+    if not is_valid:
+        logger.error(f"Message validation failed: {error}. Payload: {payload}")
+        error_msg = ErrorMessage(
+            error=f"Message format invalid: {error}", code="INVALID_FORMAT"
+        )
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
 
-    delivered = await connection_manager.send_personal_message(message_obj, to_user)
-    status = MessageStatus.DELIVERED if delivered else MessageStatus.SENT
+    await schedule_message_storage(message_doc)
 
-    await update_message_status(message_obj.message_id, status)
-
-    delivery_receipt = DeliveryReceiptMessage(
-        from_user=to_user,
-        to_user=from_user,
-        message_id=message_obj.message_id,
-        status=status,
-        timestamp=datetime.utcnow().isoformat(),
+    # Prepare WebSocket message object
+    ws_message = TextMessage(
+        type=WebSocketMessageType.MESSAGE,
+        from_user=from_user,
+        to_user=recipient_id,
+        group_id=group_id,
+        message_id=message_id,
+        text=text,
+        timestamp=timestamp.isoformat(),
+        status=MessageStatus.SENT.value,
     )
-    await connection_manager.send_personal_message(delivery_receipt, from_user)
 
-    await broadcast_to_related_connections(message_obj, from_user, to_user, from_user)
-
-    if not delivered:
-        try:
-            recipient = await get_cached_user(to_user)
-            sender = await get_cached_user(from_user)
-
-            if recipient and recipient.get("fcm_token"):
-                sender_name = sender.get("display_name") if sender else "Someone"
-
-                # Use attachment info in notification if text is empty
-                display_text = message_obj.text
-                if not display_text and attachments:
-                    attachment_types = [att.get("type", "file") for att in attachments]
-                    display_text = (
-                        f"Sent {len(attachments)} {', '.join(attachment_types)}"
-                    )
-
-                await send_new_message_notification(
-                    recipient["fcm_token"],
-                    sender_name,
-                    display_text,
-                    message_obj.message_id,
-                    from_user,
+    if is_group_message:
+        await connection_manager.send_group_message(ws_message, group_id, from_user)
+    else:
+        sent_to_recipient = await connection_manager.send_personal_message(
+            ws_message, recipient_id
+        )
+        await connection_manager.send_personal_message(ws_message, from_user)  # Echo
+        if not connection_manager.is_user_online(recipient_id):
+            sender_user = await get_cached_user(from_user)
+            sender_name = (
+                sender_user.get("username", "Someone") if sender_user else "Someone"
+            )
+            # Correctly call send_new_message_notification with all required args
+            asyncio.create_task(
+                send_new_message_notification(
+                    recipient_id=recipient_id,
+                    sender_name=sender_name,
+                    message_text=text,
+                    message_id=message_id,  # Pass message_id
+                    contact_id=from_user,  # Pass sender_id as contact_id for direct messages
                 )
-        except Exception as e:
-            logger.error(f"Error sending notification: {e}")
+            )
 
-    logger.info(f"Text message handling complete for message {message_obj.message_id}")
+    # Ensure broadcast_to_related_connections is commented out
+    # await broadcast_to_related_connections(ws_message, from_user, to_user, from_user)
+
+    logger.info(f"Text message handling complete for message {message_id}")
 
 
 async def handle_reply_message(
     payload: Dict, from_user: str, to_user: str, websocket: WebSocket
 ):
-    sender_timezone = connection_manager.get_user_timezone(from_user)
-    recipient_timezone = connection_manager.get_user_timezone(to_user)
+    # Similar validation as handle_text_message for text/attachments
+    if not payload.get("text") and not payload.get("attachments"):
+        logger.warning(f"Reply message from {from_user} is empty.")
+        return
+    if not payload.get("reply_to"):
+        logger.warning(f"Reply message from {from_user} missing reply_to field.")
+        return
 
-    # Log raw payload for debugging
-    logger.info(f"Reply raw payload: {payload}")
-
-    # Extract attachments correctly from either nested payload or direct attachments
+    message_id = payload.get("_id", str(uuid.uuid4()))
+    conversation_id = payload.get("conversation_id")
+    text = payload.get("text", "")
     attachments = payload.get("attachments", [])
-    if not attachments and "payload" in payload and "attachments" in payload["payload"]:
-        attachments = payload["payload"]["attachments"]
+    reply_to_id = payload["reply_to"]
+    timestamp_str = payload.get("timestamp", datetime.utcnow().isoformat())
+    timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
 
-    logger.info(f"Reply attachment data structure: {json.dumps(attachments)}")
+    # --- Group Chat Logic --- >
+    group_id = payload.get("group_id")
+    is_group_message = bool(group_id)
 
-    reply_obj = ReplyMessage(
-        from_user=from_user,
-        to_user=to_user,
-        message_id=payload.get("id"),
-        text=payload.get("text", ""),
-        timestamp=payload.get("timestamp") or datetime.utcnow().isoformat(),
-        status=payload.get("status", "sent"),
-        attachments=attachments,
-        reply_to=payload.get("reply_to"),
-    )
+    if is_group_message:
+        recipient_id = None
+        is_member = await is_user_group_member(group_id, from_user)
+        if not is_member:
+            # Send error
+            error_msg = ErrorMessage(
+                error="You are not a member of this group.", code="NOT_MEMBER"
+            )
+            await connection_manager.send_personal_message(error_msg, from_user)
+            return
+        conversation_id = group_id  # Use group_id as conversation_id
+        logger.info(f"Processing group reply from {from_user} to group {group_id}")
+    else:
+        recipient_id = to_user
+        if not recipient_id:
+            # Send error
+            error_msg = ErrorMessage(
+                error="Recipient ID missing for direct reply.", code="MISSING_RECIPIENT"
+            )
+            await connection_manager.send_personal_message(error_msg, from_user)
+            return
+        if not conversation_id:
+            conversation_id = generate_conversation_id(from_user, recipient_id)
+        logger.info(f"Processing direct reply from {from_user} to {recipient_id}")
+    # < --- End Group Chat Logic ---
 
-    conversation_id = f"{min(from_user, to_user)}_{max(from_user, to_user)}"
+    # Create DB document
     message_doc = {
-        "_id": reply_obj.message_id,
-        "conversation_id": conversation_id,
+        "_id": message_id,
         "sender_id": from_user,
-        "recipient_id": to_user,
-        "text": reply_obj.text,
-        "timestamp": reply_obj.timestamp,
-        "status": MessageStatus.SENT,
+        "recipient_id": recipient_id,
+        "group_id": group_id,
+        "conversation_id": conversation_id,
+        "text": text,
         "attachments": attachments,
-        "reply_to": reply_obj.reply_to,
+        "reply_to": reply_to_id,
+        "timestamp": timestamp,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
-        "type": "reply",
-        "sender_timezone": sender_timezone,
-        "recipient_timezone": recipient_timezone,
+        "status": MessageStatus.SENT,
+        "type": WebSocketMessageType.REPLY.value,
     }
 
-    # Ensure we immediately flush to database instead of batching for messages with attachments
-    if attachments:
-        logger.info(f"Reply has attachments, immediate database save")
-        logger.info(f"Reply attachment data structure: {json.dumps(attachments)}")
-        try:
-            messages_collection = get_messages_collection()
-            # Directly insert the document
-            result = await messages_collection.insert_one(message_doc)
-            logger.info(
-                f"Successfully saved reply with attachments to database with ID: {result.inserted_id}"
-            )
-            # Also add to cache
-            message_cache[str(reply_obj.message_id)] = message_doc
-        except Exception as e:
-            logger.error(f"Error saving reply with attachment to database: {e}")
-            # Fall back to batch storage if direct save fails
-            await schedule_message_storage(message_doc)
+    # Validate (validate_message might need update for reply type)
+    is_valid, error = validate_message(message_doc)  # Basic validation
+    if not is_valid:
+        # Send error
+        error_msg = ErrorMessage(
+            error=f"Reply format invalid: {error}", code="INVALID_FORMAT"
+        )
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
+
+    await schedule_message_storage(message_doc)
+
+    # Prepare WS Message
+    ws_message = ReplyMessage(
+        type=WebSocketMessageType.REPLY,
+        from_user=from_user,
+        to_user=recipient_id,  # None for group
+        group_id=group_id,
+        message_id=message_id,
+        text=text,
+        attachments=attachments,
+        reply_to=reply_to_id,
+        timestamp=timestamp.isoformat(),
+        status=MessageStatus.SENT.value,
+    )
+
+    # Send via WebSocket
+    if is_group_message:
+        await connection_manager.send_group_message(ws_message, group_id, from_user)
     else:
-        await schedule_message_storage(message_doc)
-
-    delivered = await connection_manager.send_personal_message(reply_obj, to_user)
-
-    status = MessageStatus.DELIVERED if delivered else MessageStatus.SENT
-    await update_message_status(reply_obj.message_id, status)
-
-    await broadcast_to_related_connections(reply_obj, from_user, to_user, from_user)
-
-    # Handle notification for undelivered replies
-    if not delivered:
-        try:
-            recipient = await get_cached_user(to_user)
-            sender = await get_cached_user(from_user)
-
-            if recipient and recipient.get("fcm_token"):
-                sender_name = sender.get("display_name") if sender else "Someone"
-
-                # Use attachment info in notification if text is empty
-                display_text = reply_obj.text
-                if not display_text and attachments:
-                    attachment_types = [att.get("type", "file") for att in attachments]
-                    display_text = (
-                        f"Replied with {len(attachments)} {', '.join(attachment_types)}"
-                    )
-
-                await send_new_message_notification(
-                    recipient["fcm_token"],
-                    sender_name,
-                    display_text,
-                    reply_obj.message_id,
-                    from_user,
+        await connection_manager.send_personal_message(ws_message, recipient_id)
+        await connection_manager.send_personal_message(ws_message, from_user)  # Echo
+        # Push notification logic (similar to handle_text_message)
+        if not connection_manager.is_user_online(recipient_id):
+            sender_user = await get_cached_user(from_user)
+            sender_name = (
+                sender_user.get("username", "Someone") if sender_user else "Someone"
+            )
+            notification_text = (
+                f"Replied: {text}" if text else "Replied with attachment"
+            )
+            asyncio.create_task(
+                send_new_message_notification(
+                    recipient_id=recipient_id,
+                    sender_name=sender_name,
+                    message_text=notification_text,
+                    message_id=message_id,
+                    contact_id=from_user,
                 )
-        except Exception as e:
-            logger.error(f"Error sending reply notification: {e}")
+            )
+
+    logger.info(f"Reply message handling complete for message {message_id}")
 
 
 async def handle_edit_message(
-    payload: Dict, from_user: str, to_user: str, websocket: WebSocket
+    payload: Dict,
+    from_user: str,
+    to_user: str,
+    websocket: WebSocket,  # to_user might be irrelevant here
 ):
-    try:
-        message_id = str(payload.get("messageId", ""))
-        new_text = payload.get("text", "")
+    message_id = payload.get("message_id", payload.get("messageId"))
+    new_text = payload.get("text")
 
-        if not message_id or not new_text:
-            error_message = "Missing " + ("messageId" if not message_id else "text")
-            error = ErrorMessage(code=400, message=error_message)
-            await websocket.send_text(error.json())
-            return
+    if not message_id or new_text is None:  # Allow empty string for text
+        error_msg = ErrorMessage(
+            error="Missing message_id or text for edit.", code="INVALID_EDIT"
+        )
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
 
+    # Fetch the original message from DB
+    original_message = await get_cached_message(message_id)
+    if not original_message:
+        # Potentially check DB directly if not in cache
         messages_collection = get_messages_collection()
-        message = await messages_collection.find_one(
-            {"_id": message_id, "sender_id": from_user}
+        original_message = await messages_collection.find_one({"_id": message_id})
+
+    if not original_message:
+        error_msg = ErrorMessage(error="Message not found.", code="NOT_FOUND")
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
+
+    # Authorization: Check if the editor is the original sender
+    if original_message.get("sender_id") != from_user:
+        error_msg = ErrorMessage(
+            error="You cannot edit this message.", code="FORBIDDEN"
         )
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
 
-        if not message:
-            error = ErrorMessage(code=403, message="Cannot edit this message")
-            await websocket.send_text(error.json())
-            return
+    # Update message in DB
+    edited_at = datetime.utcnow()
+    update_fields = {
+        "text": new_text,
+        "is_edited": True,
+        "edited_at": edited_at,
+        "updated_at": edited_at,
+    }
+    update_success = await update_message_status(
+        message_id, original_message["status"], update_fields
+    )
+    if not update_success:
+        error_msg = ErrorMessage(error="Failed to update message.", code="DB_ERROR")
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
 
-        edited_timestamp = datetime.utcnow()
+    # Prepare WS Message
+    ws_message = EditMessage(
+        type=WebSocketMessageType.EDIT,
+        from_user=from_user,
+        to_user=original_message.get(
+            "recipient_id"
+        ),  # Keep original recipient/group context
+        group_id=original_message.get("group_id"),
+        message_id=message_id,
+        text=new_text,
+        edited_at=edited_at.isoformat(),
+    )
 
-        update_fields = {
-            "text": new_text,
-            "is_edited": True,
-            "edited_at": edited_timestamp,
-            "updated_at": edited_timestamp,
-        }
+    # Send acknowledgement back to sender
+    ack = StatusMessage(
+        status="ok", message="Message edited", payload={"message_id": message_id}
+    )
+    await connection_manager.send_personal_message(ack, from_user)
 
-        update_success = await update_message_status(
-            message_id, message["status"], update_fields
+    # Broadcast edit notification
+    original_group_id = original_message.get("group_id")
+    original_recipient_id = original_message.get("recipient_id")
+
+    if original_group_id:
+        await connection_manager.send_group_message(
+            ws_message, original_group_id, from_user
         )
-        if not update_success:
-            error = ErrorMessage(
-                code=500, message="Failed to update message in database"
-            )
-            await websocket.send_text(error.json())
-            return
-
-        edit_obj = EditMessage(
-            from_user=from_user,
-            to_user=to_user,
-            message_id=message_id,
-            text=new_text,
-            edited_at=edited_timestamp.isoformat(),
+    elif original_recipient_id:
+        # Send to original recipient and sender's other connections
+        await connection_manager.send_personal_message(
+            ws_message, original_recipient_id
         )
+        await broadcast_to_related_connections(
+            ws_message,
+            from_user,
+            original_recipient_id,
+            websocket.headers.get("sec-websocket-key"),
+        )  # Assuming websocket has headers
 
-        ack = StatusMessage(
-            from_user="system",
-            to_user=from_user,
-            status="ok",
-            message="Message edited successfully",
-            payload={"messageId": message_id},
-        )
-        await websocket.send_text(ack.json())
-
-        await broadcast_to_related_connections(edit_obj, from_user, to_user, from_user)
-
-        # Broadcast to other relevant connections
-        for uid, connection in connection_manager.active_connections.items():
-            if uid != from_user and uid != to_user:
-                try:
-                    recipient_edit_obj = EditMessage(
-                        from_user=from_user,
-                        to_user=uid,
-                        message_id=message_id,
-                        text=new_text,
-                        edited_at=edited_timestamp.isoformat(),
-                    )
-                    await broadcast_to_related_connections(
-                        recipient_edit_obj, from_user, uid, from_user
-                    )
-                except Exception as e:
-                    logger.error(f"Error sending edit notification to {uid}: {e}")
-
-    except Exception as e:
-        logger.error(f"Error editing message: {e}")
-        error = ErrorMessage(code=500, message="Failed to edit message")
-        await websocket.send_text(error.json())
+    logger.info(f"Edit message handling complete for message {message_id}")
 
 
 async def handle_delete_message(
-    payload: Dict, from_user: str, to_user: str, websocket: WebSocket
+    payload: Dict,
+    from_user: str,
+    to_user: str,
+    websocket: WebSocket,  # to_user might be irrelevant
 ):
-    try:
-        message_id = str(payload.get("messageId", ""))
+    message_id = payload.get("message_id", payload.get("messageId"))
 
-        if not message_id:
-            error = ErrorMessage(code=400, message="Missing messageId")
-            await websocket.send_text(error.json())
-            return
+    if not message_id:
+        error_msg = ErrorMessage(
+            error="Missing message_id for delete.", code="INVALID_DELETE"
+        )
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
 
+    # Fetch the original message from DB
+    original_message = await get_cached_message(message_id)
+    if not original_message:
         messages_collection = get_messages_collection()
-        message = await messages_collection.find_one(
-            {"_id": message_id, "sender_id": from_user}
+        original_message = await messages_collection.find_one({"_id": message_id})
+
+    if not original_message:
+        error_msg = ErrorMessage(error="Message not found.", code="NOT_FOUND")
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
+
+    # Authorization: Check if the deleter is the original sender
+    if original_message.get("sender_id") != from_user:
+        error_msg = ErrorMessage(
+            error="You cannot delete this message.", code="FORBIDDEN"
         )
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
 
-        if not message:
-            error = ErrorMessage(code=403, message="Cannot delete this message")
-            await websocket.send_text(error.json())
-            return
+    # Update message in DB (soft delete)
+    deleted_at = datetime.utcnow()
+    update_fields = {
+        "text": "",  # Optionally clear text
+        "attachments": [],  # Optionally clear attachments
+        "is_deleted": True,
+        "deleted_at": deleted_at,
+        "updated_at": deleted_at,
+    }
+    # Use specific status or keep last known status?
+    # Let's keep the status but mark as deleted
+    update_success = await update_message_status(
+        message_id, original_message["status"], update_fields
+    )
+    if not update_success:
+        error_msg = ErrorMessage(error="Failed to delete message.", code="DB_ERROR")
+        await connection_manager.send_personal_message(error_msg, from_user)
+        return
 
-        deleted_timestamp = datetime.utcnow()
+    # Prepare WS Message
+    ws_message = DeleteMessage(
+        type=WebSocketMessageType.DELETE,
+        from_user=from_user,
+        to_user=original_message.get("recipient_id"),  # Keep original context
+        group_id=original_message.get("group_id"),
+        message_id=message_id,
+        deleted_at=deleted_at.isoformat(),
+    )
 
-        update_fields = {
-            "is_deleted": True,
-            "deleted_at": deleted_timestamp,
-            "updated_at": deleted_timestamp,
-        }
+    # Send acknowledgement back to sender
+    ack = StatusMessage(
+        status="ok", message="Message deleted", payload={"message_id": message_id}
+    )
+    await connection_manager.send_personal_message(ack, from_user)
 
-        update_success = await update_message_status(
-            message_id, message["status"], update_fields
+    # Broadcast delete notification
+    original_group_id = original_message.get("group_id")
+    original_recipient_id = original_message.get("recipient_id")
+
+    if original_group_id:
+        await connection_manager.send_group_message(
+            ws_message, original_group_id, from_user
         )
-        if not update_success:
-            error = ErrorMessage(
-                code=500, message="Failed to update message in database"
-            )
-            await websocket.send_text(error.json())
-            return
-
-        delete_obj = DeleteMessage(
-            from_user=from_user,
-            to_user=to_user,
-            message_id=message_id,
-            deleted_at=deleted_timestamp.isoformat(),
+    elif original_recipient_id:
+        await connection_manager.send_personal_message(
+            ws_message, original_recipient_id
         )
-
-        ack = StatusMessage(
-            from_user="system",
-            to_user=from_user,
-            status="ok",
-            message="Message deleted successfully",
-            payload={"messageId": message_id},
-        )
-        await websocket.send_text(ack.json())
-
         await broadcast_to_related_connections(
-            delete_obj, from_user, to_user, from_user
+            ws_message,
+            from_user,
+            original_recipient_id,
+            websocket.headers.get("sec-websocket-key"),
         )
 
-        # Broadcast to other relevant connections
-        for uid, connection in connection_manager.active_connections.items():
-            if uid != from_user and uid != to_user:
-                try:
-                    recipient_delete_obj = DeleteMessage(
-                        from_user=from_user,
-                        to_user=uid,
-                        message_id=message_id,
-                        deleted_at=deleted_timestamp.isoformat(),
-                    )
-                    await broadcast_to_related_connections(
-                        recipient_delete_obj, from_user, uid, from_user
-                    )
-                except Exception as e:
-                    logger.error(f"Error sending delete notification to {uid}: {e}")
-
-    except Exception as e:
-        logger.error(f"Error deleting message: {e}")
-        error = ErrorMessage(code=500, message="Failed to delete message")
-        await websocket.send_text(error.json())
+    logger.info(f"Delete message handling complete for message {message_id}")
 
 
 async def handle_read_receipt(payload: Dict, from_user: str, to_user: str):

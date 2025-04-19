@@ -28,19 +28,20 @@ class Attachment(BaseModel):
 class MessageBase(BaseModel):
     text: str
     attachments: Optional[List[Attachment]] = None
+    group_id: Optional[str] = None
 
 
 class MessageCreate(MessageBase):
-    conversation_id: str
+    conversation_id: Optional[str] = None
     sender_id: str
-    recipient_id: str
+    recipient_id: Optional[str] = None
 
 
 class MessageInDB(MessageBase):
     id: str = Field(..., alias="_id")
-    conversation_id: str
+    conversation_id: Optional[str] = None
     sender_id: str
-    recipient_id: str
+    recipient_id: Optional[str] = None
     status: MessageStatus = MessageStatus.SENT
     created_at: datetime
     updated_at: datetime
@@ -57,9 +58,9 @@ class MessageInDB(MessageBase):
 
 class MessageResponse(MessageBase):
     id: str = Field(..., alias="_id")
-    conversation_id: str
+    conversation_id: Optional[str] = None
     sender_id: str
-    recipient_id: str
+    recipient_id: Optional[str] = None
     status: MessageStatus
     created_at: datetime
     updated_at: datetime
@@ -100,3 +101,4 @@ class MessageUpdate(BaseModel):
     is_deleted: Optional[bool] = None
     deleted_at: Optional[datetime] = None
     text: Optional[str] = None
+    # group_id typically shouldn't be updated
