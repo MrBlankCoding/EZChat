@@ -258,6 +258,8 @@ class WebSocketService {
   
   private async handleMessage(event: MessageEvent) {
     try {
+      console.log("[WS Service] Raw message received:", event.data);
+      
       if (event.data === 'pong' || event.data === 'ping') {
         return;
       }
@@ -266,6 +268,8 @@ class WebSocketService {
       if (!data) {
         return;
       }
+      
+      console.log("[WS Service] Parsed message data:", data);
       
       if (!data.type) {
         this.notifyErrorHandlers('Malformed message received');
@@ -276,6 +280,8 @@ class WebSocketService {
       
       const chatStore = useChatStore.getState();
       const { user } = useAuthStore.getState();
+      
+      console.log(`[WS Service] Handling message type: ${data.type}`);
       
       const ensureConversationLoaded = async (contactId: string) => {
         const conversations = chatStore.conversations;
@@ -341,19 +347,32 @@ class WebSocketService {
           break;
           
         case MessageType.READ_RECEIPT:
-          if (data.payload?.messageId) {
-            const messageId = String(data.payload.messageId);
-            const contactId = data.from || data.from_user || data.payload?.contactId;
-            
-            if (contactId) {
-              if (data.payload.allMessageIdsUpto && Array.isArray(data.payload.allMessageIdsUpto)) {
-                data.payload.allMessageIdsUpto.forEach((msgId: string | number) => {
-                  chatStore.updateMessageStatus(String(msgId), contactId, 'read');
-                });
-              } else {
-                chatStore.updateMessageStatus(messageId, contactId, 'read');
-              }
-            }
+          // The user who read the message is in 'from' or 'from_user'
+          // The user whose messages were read (and needs the UI update) is in 'to' or 'to_user'
+          const readerId_single = data.from || data.from_user;
+          const originalSenderId_single = data.to || data.to_user; // This is the contactId for the store
+          const messageId_single = String(data.message_id || data.payload?.messageId || '');
+          
+          if (originalSenderId_single && messageId_single) {
+            console.log(`[WS Service] Handling READ_RECEIPT for msg ${messageId_single} from reader ${readerId_single} for sender ${originalSenderId_single}`);
+            // Use originalSenderId_single as the contactId to update the correct conversation
+            chatStore.updateMessageStatus(messageId_single, originalSenderId_single, 'read');
+            this.notifyEventHandlers(); // Notify generic handlers
+          }
+          break;
+          
+        case MessageType.READ_RECEIPT_BATCH:
+          const readerId_batch = data.from || data.from_user;
+          const originalSenderId_batch = data.to || data.to_user; // This is the contactId for the store
+          const messageIds_batch = (data.message_ids || data.payload?.messageIds || []) as string[];
+          
+          if (originalSenderId_batch && messageIds_batch.length > 0) {
+            console.log(`[WS Service] Handling READ_RECEIPT_BATCH for ${messageIds_batch.length} messages from reader ${readerId_batch} for sender ${originalSenderId_batch}`);
+            // Use originalSenderId_batch as the contactId to update the correct conversation
+            messageIds_batch.forEach(msgId => {
+              chatStore.updateMessageStatus(String(msgId), originalSenderId_batch, 'read');
+            });
+            this.notifyEventHandlers(); // Notify generic handlers
           }
           break;
           
@@ -384,15 +403,16 @@ class WebSocketService {
           
         case MessageType.EDIT:
           const editData = data.payload || {};
-          const editMessageId = editData.messageId ? String(editData.messageId) : '';
-          const editedText = editData.text;
-          const editedAt = editData.editedAt || data.edited_at || new Date().toISOString();
+          const editMessageId = String(data.message_id || editData.messageId || '');
+          const editedText = data.text || editData.text || '';
+          const editedAt = data.edited_at || editData.editedAt || new Date().toISOString();
           const editorId = data.from || data.from_user;
           
           if (editMessageId && editedText && editorId) {
             const contactId = user?.id === editorId ? data.to || data.to_user : editorId;
             
             if (contactId) {
+              console.log(`[WS Service] Handling EDIT for msg ${editMessageId} in contact ${contactId}`);
               chatStore.updateEditedMessage(editMessageId, contactId, editedText, editedAt);
               this.notifyEventHandlers();
             }
@@ -401,14 +421,15 @@ class WebSocketService {
           
         case MessageType.DELETE:
           const deleteData = data.payload || {};
-          const deleteMessageId = deleteData.messageId ? String(deleteData.messageId) : '';
-          const deletedAt = deleteData.deletedAt || data.deleted_at || new Date().toISOString();
+          const deleteMessageId = String(data.message_id || deleteData.messageId || '');
+          const deletedAt = data.deleted_at || deleteData.deletedAt || new Date().toISOString();
           const deleterId = data.from || data.from_user;
           
           if (deleteMessageId && deleterId) {
             const contactId = user?.id === deleterId ? data.to || data.to_user : deleterId;
             
             if (contactId) {
+              console.log(`[WS Service] Handling DELETE for msg ${deleteMessageId} in contact ${contactId}`);
               chatStore.updateDeletedMessage(deleteMessageId, contactId, deletedAt);
               this.notifyEventHandlers();
             }

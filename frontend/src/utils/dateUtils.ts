@@ -1,4 +1,4 @@
-import { format as formatDateFns } from 'date-fns';
+import { format, isToday, isYesterday, isThisWeek, isThisYear } from 'date-fns';
 import { format as formatTz, utcToZonedTime } from 'date-fns-tz';
 
 /**
@@ -40,16 +40,53 @@ export const formatDate = (
 };
 
 /**
- * Format a timestamp for a message or last seen status
- * @param timestamp Timestamp to format
- * @param timezone Optional timezone
+ * Format a message timestamp for display in message bubbles
  */
-export const formatMessageTime = (
-  timestamp: string | number,
-  timezone?: string
-): string => {
-  return formatDate(timestamp, 'p', timezone);
-};
+export function formatMessageTime(timestamp: string | number): string {
+  const date = new Date(timestamp);
+  
+  if (isToday(date)) {
+    // Today: just show time
+    return format(date, 'h:mm a');
+  } else if (isYesterday(date)) {
+    // Yesterday
+    return 'Yesterday';
+  } else if (isThisWeek(date)) {
+    // This week: show day name
+    return format(date, 'EEEE');
+  } else if (isThisYear(date)) {
+    // This year: show month and day
+    return format(date, 'MMM d');
+  } else {
+    // Previous years: show month, day and year
+    return format(date, 'MMM d, yyyy');
+  }
+}
+
+/**
+ * Format a full date time for message details
+ */
+export function formatFullDateTime(timestamp: string | number): string {
+  const date = new Date(timestamp);
+  return format(date, 'MMMM d, yyyy h:mm a');
+}
+
+/**
+ * Format a date for conversation list
+ */
+export function formatConversationDate(timestamp: string | number): string {
+  const date = new Date(timestamp);
+  
+  if (isToday(date)) {
+    return format(date, 'h:mm a');
+  } else if (isYesterday(date)) {
+    return 'Yesterday';
+  } else if (isThisWeek(date)) {
+    return format(date, 'EEEE');
+  } else {
+    return format(date, 'MM/dd/yyyy');
+  }
+}
 
 /**
  * Format a date in relative time (today, yesterday, etc)

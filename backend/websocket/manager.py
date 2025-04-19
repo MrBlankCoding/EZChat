@@ -66,9 +66,11 @@ last_db_flush = time.time()
 db_flush_lock = asyncio.Lock()
 
 
-def debug_log(message, force=False):
+def logger_info(message, force=False):
     if DEBUG or force:
-        logger.debug(message)
+        # Restore original logger.debug
+        # logger.info(f"[logger.info] {message}")
+        logger.debug(message)  # Original line
 
 
 def should_log_read_receipt(user_id, message_id):
@@ -152,10 +154,10 @@ async def flush_messages_to_db():
 
         try:
             if messages_to_flush:
-                debug_log(f"Flushing {len(messages_to_flush)} messages to database")
+                logger.info(f"Flushing {len(messages_to_flush)} messages to database")
                 messages_collection = get_messages_collection()
                 result = await messages_collection.insert_many(messages_to_flush)
-                debug_log(
+                logger.info(
                     f"Bulk insert completed, inserted: {len(result.inserted_ids)}"
                 )
         except Exception as e:
@@ -199,7 +201,7 @@ async def update_message_status(
 
         if not message_exists:
             if DEBUG:
-                debug_log(f"Message {message_id_str} not found for status update")
+                logger.info(f"Message {message_id_str} not found for status update")
             return False
 
         async with db_semaphore:
@@ -212,10 +214,12 @@ async def update_message_status(
 
             if result.matched_count == 0:
                 if DEBUG:
-                    debug_log(f"Message {message_id_str} not matched for status update")
+                    logger.info(
+                        f"Message {message_id_str} not matched for status update"
+                    )
                 return False
 
-            debug_log(f"Updated message {message_id_str} status to {status}")
+            logger.info(f"Updated message {message_id_str} status to {status}")
 
             # Update cache if message is cached
             if message_id_str in message_cache:
@@ -319,7 +323,7 @@ class ConnectionManager:
         self.active_connections[user_id] = websocket
         self.user_statuses[user_id] = "online"
         self.last_heartbeat[user_id] = time.time()
-        debug_log(
+        logger.info(
             f"User {user_id} connected. Total active connections: {len(self.active_connections)}"
         )
         await self.broadcast_presence(user_id, "online")
@@ -333,7 +337,7 @@ class ConnectionManager:
             self.user_statuses[user_id] = "offline"
             if user_id in self.last_heartbeat:
                 del self.last_heartbeat[user_id]
-            debug_log(
+            logger.info(
                 f"User {user_id} disconnected. Remaining connections: {len(self.active_connections)}"
             )
             await self.broadcast_presence(user_id, "offline")
@@ -365,9 +369,15 @@ class ConnectionManager:
     ):
         try:
             if connection.client_state == WebSocketState.CONNECTED:
+                logger.info(
+                    f"[Broadcast Send] Attempting to send to {recipient_id}: {message_text[:200]}{'...' if len(message_text) > 200 else ''}"
+                )
                 await connection.send_text(message_text)
                 return True
             else:
+                logger.info(
+                    f"[Broadcast Send] Connection state not CONNECTED for {recipient_id}, disconnecting."
+                )
                 await self.disconnect(recipient_id)
                 return False
         except Exception as e:
@@ -380,14 +390,33 @@ class ConnectionManager:
     ) -> bool:
         if recipient_id in self.active_connections:
             try:
+                logger.info(
+                    f"[Send Personal] Preparing message for {recipient_id}: {message.dict()}"
+                )  # Log before sending
                 connection = self.active_connections[recipient_id]
                 if connection.client_state == WebSocketState.CONNECTED:
-                    await connection.send_text(message.json())
+                    # Explicitly serialize here to catch errors and ensure correct format
+                    try:
+                        message_text = message.json()  # Use Pydantic's .json() method
+                    except Exception as json_error:
+                        logger.error(
+                            f"Failed to serialize message for {recipient_id}: {json_error}. Message: {message.dict()}"
+                        )
+                        return False
+
+                    # Pass the JSON string to the lower-level sender
+                    await self._send_message_to_connection(
+                        connection, message_text, recipient_id
+                    )
                     return True
                 else:
+                    logger.info(
+                        f"[Send Personal] Connection state not CONNECTED for {recipient_id}, disconnecting."
+                    )
                     await self.disconnect(recipient_id)
             except Exception as e:
-                logger.error(f"Error sending message to {recipient_id}: {e}")
+                # Log error occurring within send_personal_message itself
+                logger.error(f"Error in send_personal_message to {recipient_id}: {e}")
                 await self.disconnect(recipient_id)
         else:
             logger.warning(
@@ -435,7 +464,7 @@ class ConnectionManager:
     async def update_user_timezone(self, user_id: str, timezone: str):
         current_timezone = self.user_timezones.get(user_id)
         if current_timezone == timezone:
-            debug_log(f"Timezone unchanged for user {user_id}: {timezone}")
+            logger.info(f"Timezone unchanged for user {user_id}: {timezone}")
             return
 
         try:
@@ -447,7 +476,7 @@ class ConnectionManager:
                 )
 
                 if user and user.get("timezone") == timezone:
-                    debug_log(
+                    logger.info(
                         f"Timezone already up-to-date in database for user {user_id}"
                     )
                     return
@@ -467,10 +496,71 @@ class ConnectionManager:
 connection_manager = ConnectionManager()
 
 
+async def broadcast_to_related_connections(
+    message: WebSocketMessage,
+    from_user: str,  # The user ID of the sender of the original message/action
+    to_user: str,  # The user ID of the recipient of the original message/action
+    originator_connection_id: str,  # The specific connection ID that triggered this broadcast
+):
+    """Broadcasts a message to all connections related to the sender and recipient,
+    excluding the connection that originated the event."""
+    active_connections = connection_manager.active_connections
+    sender_base_id = originator_connection_id.split(":")[0]
+    recipient_base_id = to_user.split(":")[0]
+    coroutines = []
+
+    logger.info(
+        f"[Broadcast Start] Broadcasting {type(message).__name__} from {originator_connection_id} (orig sender: {from_user}, orig recipient: {to_user})"
+    )
+
+    target_connection_ids = set()
+    for conn_id in active_connections:
+        if conn_id == originator_connection_id:
+            continue  # Skip the originator
+        if conn_id.startswith(sender_base_id) or conn_id.startswith(recipient_base_id):
+            target_connection_ids.add(conn_id)
+
+    logger.info(f"[Broadcast Targets] Identified targets: {target_connection_ids}")
+
+    for conn_id in target_connection_ids:
+        try:
+            message_copy = message.copy(update={"to_user": conn_id})
+            logger.info(
+                f"[Broadcast Prep] Prepared copy for {conn_id}: {message_copy.dict()}"
+            )  # Log the prepared copy
+
+            coroutines.append(
+                connection_manager.send_personal_message(message_copy, conn_id)
+            )
+        except Exception as e:
+            logger.error(f"Error creating message copy for {conn_id}: {e}")
+            continue
+
+    if coroutines:
+        logger.info(f"[Broadcast Gather] Executing {len(coroutines)} sends.")
+        results = await asyncio.gather(*coroutines, return_exceptions=True)
+        target_list = list(target_connection_ids)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                if i < len(target_list):
+                    target_conn_id = target_list[i]
+                    logger.error(
+                        f"Error broadcasting message to potential target {target_conn_id}: {result}"
+                    )
+                else:
+                    logger.error(
+                        f"Error broadcasting message (index out of bounds): {result}"
+                    )
+    else:
+        logger.info(
+            "[Broadcast End] No coroutines to execute (no targets found or all failed copy)."
+        )
+
+
 async def handle_text_message(
     payload: Dict, from_user: str, to_user: str, websocket: WebSocket
 ):
-    debug_log(f"Handling text message from {from_user} to {to_user}")
+    logger.info(f"Handling text message from {from_user} to {to_user}")
 
     sender_timezone = connection_manager.get_user_timezone(from_user)
     recipient_timezone = connection_manager.get_user_timezone(to_user)
@@ -521,48 +611,7 @@ async def handle_text_message(
     )
     await connection_manager.send_personal_message(delivery_receipt, from_user)
 
-    active_connections = connection_manager.active_connections
-    sender_base_id = from_user.split(":")[0]
-    recipient_base_id = to_user.split(":")[0]
-
-    coroutines = []
-
-    for conn_id, conn in active_connections.items():
-        if conn_id == from_user or conn_id == to_user:
-            continue
-
-        if conn_id.startswith(sender_base_id):
-            sender_message_obj = TextMessage(
-                from_user=from_user,
-                to_user=to_user,
-                message_id=message_obj.message_id,
-                text=message_obj.text,
-                timestamp=message_obj.timestamp,
-                attachments=message_obj.attachments,
-                reply_to=message_obj.reply_to,
-                status=status,
-            )
-            coroutines.append(
-                connection_manager.send_personal_message(sender_message_obj, conn_id)
-            )
-
-        elif conn_id.startswith(recipient_base_id):
-            recipient_message_obj = TextMessage(
-                from_user=from_user,
-                to_user=conn_id,
-                message_id=message_obj.message_id,
-                text=message_obj.text,
-                timestamp=message_obj.timestamp,
-                attachments=message_obj.attachments,
-                reply_to=message_obj.reply_to,
-                status=status,
-            )
-            coroutines.append(
-                connection_manager.send_personal_message(recipient_message_obj, conn_id)
-            )
-
-    if coroutines:
-        await asyncio.gather(*coroutines, return_exceptions=True)
+    await broadcast_to_related_connections(message_obj, from_user, to_user, from_user)
 
     if not delivered:
         try:
@@ -581,7 +630,7 @@ async def handle_text_message(
         except Exception as e:
             logger.error(f"Error sending notification: {e}")
 
-    debug_log(f"Text message handling complete for message {message_obj.message_id}")
+    logger.info(f"Text message handling complete for message {message_obj.message_id}")
 
 
 async def handle_reply_message(
@@ -624,6 +673,8 @@ async def handle_reply_message(
 
     status = MessageStatus.DELIVERED if delivered else MessageStatus.SENT
     await update_message_status(reply_obj.message_id, status)
+
+    await broadcast_to_related_connections(reply_obj, from_user, to_user, from_user)
 
 
 async def handle_reaction_message(
@@ -674,7 +725,9 @@ async def handle_reaction_message(
             )
 
         if to_user != from_user:
-            await connection_manager.send_personal_message(reaction_obj, to_user)
+            await broadcast_to_related_connections(
+                reaction_obj, from_user, to_user, from_user
+            )
 
     except Exception as e:
         logger.error(f"Error handling reaction: {e}")
@@ -741,7 +794,7 @@ async def handle_edit_message(
         )
         await websocket.send_text(ack.json())
 
-        await connection_manager.send_personal_message(edit_obj, to_user)
+        await broadcast_to_related_connections(edit_obj, from_user, to_user, from_user)
 
         # Broadcast to other relevant connections
         for uid, connection in connection_manager.active_connections.items():
@@ -754,8 +807,8 @@ async def handle_edit_message(
                         text=new_text,
                         edited_at=edited_timestamp.isoformat(),
                     )
-                    await connection_manager.send_personal_message(
-                        recipient_edit_obj, uid
+                    await broadcast_to_related_connections(
+                        recipient_edit_obj, from_user, uid, from_user
                     )
                 except Exception as e:
                     logger.error(f"Error sending edit notification to {uid}: {e}")
@@ -821,7 +874,9 @@ async def handle_delete_message(
         )
         await websocket.send_text(ack.json())
 
-        await connection_manager.send_personal_message(delete_obj, to_user)
+        await broadcast_to_related_connections(
+            delete_obj, from_user, to_user, from_user
+        )
 
         # Broadcast to other relevant connections
         for uid, connection in connection_manager.active_connections.items():
@@ -833,8 +888,8 @@ async def handle_delete_message(
                         message_id=message_id,
                         deleted_at=deleted_timestamp.isoformat(),
                     )
-                    await connection_manager.send_personal_message(
-                        recipient_delete_obj, uid
+                    await broadcast_to_related_connections(
+                        recipient_delete_obj, from_user, uid, from_user
                     )
                 except Exception as e:
                     logger.error(f"Error sending delete notification to {uid}: {e}")
@@ -874,7 +929,7 @@ async def handle_read_receipt(payload: Dict, from_user: str, to_user: str):
 
         if not message_exists:
             if DEBUG:
-                debug_log(f"Read receipt for non-existent message: {message_id}")
+                logger.info(f"Read receipt for non-existent message: {message_id}")
             return
 
         # Queue for batch processing instead of immediate processing
@@ -891,7 +946,7 @@ async def handle_read_receipt(payload: Dict, from_user: str, to_user: str):
 
         # Only log periodically to avoid flooding logs
         if should_log_read_receipt(from_user, message_id):
-            debug_log(
+            logger.info(
                 f"Queued read receipt for {message_id} from {from_user} to {to_user}"
             )
     except Exception as e:
@@ -909,7 +964,7 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
         return
 
     if DEBUG:
-        debug_log(
+        logger.info(
             f"Processing batch of {len(message_ids)} read receipts from {from_user}"
         )
 
@@ -935,7 +990,9 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
                 # Log any missing messages at debug level only
                 missing_ids = [msg_id for msg_id in chunk if msg_id not in existing_ids]
                 if missing_ids and DEBUG:
-                    debug_log(f"Read receipt for non-existent messages: {missing_ids}")
+                    logger.info(
+                        f"Read receipt for non-existent messages: {missing_ids}"
+                    )
 
                 # Only update messages that exist
                 if existing_ids:
@@ -955,7 +1012,7 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
             logger.error(f"Error processing read receipt chunk: {e}")
 
     if DEBUG and total_updated > 0:
-        debug_log(
+        logger.info(
             f"Updated {total_updated} of {len(message_ids)} messages to read status"
         )
 
@@ -1002,16 +1059,17 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
 
 @websocket_router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+    print("--- WebSocket Endpoint Entered ---")
     user_id = None
-    heartbeat_task = None  # Define heartbeat_task at the start to avoid linter error
+    heartbeat_task = None
 
     try:
-        debug_log(f"WebSocket connection attempt")
+        logger.info(f"WebSocket connection attempt")
 
         try:
             firebase_token = await verify_token(token)
             user_id = firebase_token.firebase_uid
-            debug_log(f"WebSocket token verified for user: {user_id}")
+            logger.info(f"WebSocket token verified for user: {user_id}")
         except Exception as e:
             logger.error(f"WebSocket token verification failed: {str(e)}")
             await websocket.accept()
@@ -1139,12 +1197,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                 await websocket.send_text(error.json())
 
     except WebSocketDisconnect:
-        debug_log(f"WebSocket client disconnected: {user_id}")
+        logger.info(f"WebSocket client disconnected: {user_id}")
         if user_id:
             await connection_manager.disconnect(user_id)
 
     except ConnectionClosed:
-        debug_log(f"WebSocket connection closed: {user_id}")
+        logger.info(f"WebSocket connection closed: {user_id}")
         if user_id:
             await connection_manager.disconnect(user_id)
 

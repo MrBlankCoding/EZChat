@@ -296,31 +296,31 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     console.log('[ChatWindow] Setting up WebSocket event subscription for', contactId);
     
     const handleWebSocketEvent = () => {
-      console.log('[ChatWindow] WebSocket event received, forcing state refresh');
-      setWsEventCounter(prev => prev + 1);
+      console.log('[ChatWindow] WebSocket event received');
       
-      // Handle case where messages weren't properly loaded
-      if (conversations?.[contactId]?.messages?.length === 0) {
-        console.log('[ChatWindow] No messages loaded, fetching messages...');
+      // Keep the logic to fetch messages if none are loaded, triggered by an event
+      const currentConversation = useChatStore.getState().conversations[contactId];
+      if (!currentConversation || currentConversation.messages?.length === 0) {
+        console.log('[ChatWindow] No messages loaded or conversation empty, fetching messages...');
         useChatStore.getState().fetchMessagesForContact(contactId);
       }
-    };
-    
-    // Check for any missed read receipts
-    const conversation = conversations?.[contactId];
-    if (conversation?.messages?.length > 0) {
-      // Find unread messages from the contact
-      const unreadMessages = conversation.messages.filter(
-        msg => msg.senderId === contactId && msg.status !== 'read'
-      );
       
-      if (unreadMessages.length > 0) {
-        // Send read receipts for all unread messages
-        unreadMessages.forEach(msg => {
-          websocketService.sendReadReceipt(contactId, msg.id);
-        });
+      // Check for any missed read receipts - This might be better placed elsewhere
+      // or triggered more specifically, but let's keep it for now while removing the main issue.
+      const conversation = useChatStore.getState().conversations[contactId]; // Get latest state
+      if (conversation?.messages?.length > 0) {
+        const unreadMessages = conversation.messages.filter(
+          msg => msg.senderId === contactId && msg.status !== 'read'
+        );
+        
+        if (unreadMessages.length > 0) {
+          unreadMessages.forEach(msg => {
+            // Use the queuing mechanism in websocketService
+            websocketService.sendReadReceipt(contactId, msg.id);
+          });
+        }
       }
-    }
+    };
     
     const unsubscribe = websocketService.subscribeToEvents(handleWebSocketEvent);
     
@@ -329,7 +329,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
       websocketService.sendPendingReadReceipts(); // Send any pending read receipts before unmounting
       if (unsubscribe) unsubscribe();
     };
-  }, [contactId, conversations]);
+  }, [contactId]);
   
   const handleTyping = () => {
     if (!isTyping) {
