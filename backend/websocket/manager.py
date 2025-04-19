@@ -545,6 +545,19 @@ class ConnectionManager:
             # logger_info(f"User {recipient_id} not connected for personal message.")
             return False
 
+    async def send_json_to_user(self, user_id: str, json_data: dict) -> bool:
+        """Sends a JSON message to a specific user if they are connected."""
+        connection = self.active_connections.get(user_id)
+        if connection:
+            try:
+                message_str = json.dumps(json_data)
+                await self._send_message_to_connection(connection, message_str, user_id)
+                return True
+            except Exception as e:
+                logger.error(f"Error serializing/sending JSON to {user_id}: {e}")
+                return False
+        return False
+
     async def send_group_message(
         self, message: WebSocketMessage, group_id: str, sender_id: str
     ):

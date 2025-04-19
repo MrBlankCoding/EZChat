@@ -251,6 +251,25 @@ class PresenceManager {
     
     // console.log(`[Presence] Updated contact ${contactId} status to ${status}`);
   }
+  
+  // Get a contact's current status
+  getContactStatus(contactId: string): PresenceState {
+    try {
+      const contactsStore = useContactsStore.getState();
+      const contact = contactsStore.contacts.find(c => c.contact_id === contactId);
+      
+      // Map contact_status to PresenceState
+      if (contact?.contact_status === PresenceState.ONLINE) return PresenceState.ONLINE;
+      if (contact?.contact_status === PresenceState.AWAY) return PresenceState.AWAY;
+      if (contact?.contact_status === 'online') return PresenceState.ONLINE;
+      if (contact?.contact_status === 'away') return PresenceState.AWAY;
+      
+      return PresenceState.OFFLINE;
+    } catch (error) {
+      console.warn('[Presence] Error getting contact status:', error);
+      return PresenceState.OFFLINE;
+    }
+  }
 }
 
 // Create singleton instance

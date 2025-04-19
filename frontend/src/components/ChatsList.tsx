@@ -1,314 +1,262 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useMemo } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useChatStore } from '../stores/chatStore';
 import { useContactsStore } from '../stores/contactsStore';
+import { useAuthStore } from '../stores/authStore';
 import { MagnifyingGlassIcon, XMarkIcon, EllipsisHorizontalIcon, TrashIcon, EnvelopeIcon, MapPinIcon, UserPlusIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { MapPinIcon as MapPinIconSolid } from '@heroicons/react/24/solid';
 import NewChatModal from './NewChatModal';
-import toast from 'react-hot-toast';
+import NewGroupModal from './NewGroupModal';
+import StatusIndicator from './StatusIndicator';
+import NotificationBadge from './NotificationBadge';
+import presenceManager from '../services/presenceManager';
+import { Group } from '../types';
 import { formatRelativeTime } from '../utils/dateUtils';
 import { generateAvatarUrl } from '../utils/avatarUtils';
 
 const ChatsList = () => {
+  const [isNewChatModalOpen, setIsNewChatModalOpen] = useState(false);
+  const [isNewGroupModalOpen, setIsNewGroupModalOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const navigate = useNavigate();
-  const { contacts } = useContactsStore();
+  
+  const { user } = useAuthStore();
   const { 
+    conversations, 
     activeConversationId, 
-    setActiveConversation, 
-    conversations,
-    pinConversation,
-    markConversationAsUnread,
-    deleteConversation
+    groups,
+    fetchGroups
   } = useChatStore();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
-  const [showNewChatModal, setShowNewChatModal] = useState(false);
-
-  // Get contacts with active conversations
-  const contactsWithChats = contacts.filter(contact => {
-    // Get conversations that exist in the conversations object
-    return conversations[contact.contact_id] !== undefined;
-  });
-
-  // Filter chats by search term
-  const filteredChats = contactsWithChats.filter((contact) => {
-    const displayName = contact.contact_display_name?.toLowerCase() || '';
-    const email = contact.contact_email?.toLowerCase() || '';
-    const term = searchTerm.toLowerCase();
-    return displayName.includes(term) || email.includes(term);
-  });
-
-  // Create sorted chat list based on pinned status and last message
-  const sortedChats = [...filteredChats].sort((a, b) => {
-    const conversationA = conversations[a.contact_id];
-    const conversationB = conversations[b.contact_id];
-    
-    // First sort by pinned status
-    if (conversationA?.isPinned && !conversationB?.isPinned) return -1;
-    if (!conversationA?.isPinned && conversationB?.isPinned) return 1;
-    
-    // Then sort by last message timestamp (newest first)
-    const lastMessageA = conversationA?.messages[conversationA.messages.length - 1];
-    const lastMessageB = conversationB?.messages[conversationB.messages.length - 1];
-    
-    const timestampA = lastMessageA ? new Date(lastMessageA.timestamp).getTime() : 0;
-    const timestampB = lastMessageB ? new Date(lastMessageB.timestamp).getTime() : 0;
-    
-    return timestampB - timestampA;
-  });
-
-  // Handle chat selection
-  const selectChat = (contactId: string) => {
-    setActiveConversation(contactId);
-    navigate(`/chat/${contactId}`);
-  };
+  const { contacts } = useContactsStore();
   
-  // Toggle conversation pin
-  const handleTogglePin = async (e: React.MouseEvent, contactId: string) => {
-    e.stopPropagation();
-    setActiveDropdown(null);
-    const conversation = conversations[contactId];
-    const isPinned = !conversation?.isPinned;
+  // Load groups on component mount
+  useEffect(() => {
+    fetchGroups();
+  }, [fetchGroups]);
+  
+  // Get chat items (direct chats and group chats)
+  const chatItems = useMemo(() => {
+    const items = [];
     
-    try {
-      await pinConversation(contactId, isPinned);
-      toast.success(isPinned ? 'Chat pinned' : 'Chat unpinned');
-    } catch (error) {
-      toast.error('Failed to update pin status');
+    // Process direct chats
+    for (const [contactId, conversation] of Object.entries(conversations)) {
+      // Skip group conversations - they're handled separately
+      if (conversation.isGroup) continue;
+      
+      const contact = contacts.find(c => c.contact_id === contactId);
+      if (!contact) continue;
+      
+      const lastMessage = conversation.messages[conversation.messages.length - 1];
+      
+      items.push({
+        id: contactId,
+        name: contact.contact_display_name,
+        avatar: contact.contact_avatar_url,
+        lastMessage: lastMessage?.text || '',
+        timestamp: lastMessage?.timestamp || conversation._lastUpdated || 0,
+        unreadCount: conversation.messages.filter(
+          msg => msg.senderId === contactId && msg.status !== 'read'
+        ).length,
+        status: presenceManager.getContactStatus(contactId),
+        isPinned: conversation.isPinned || false,
+        isGroup: false
+      });
     }
-  };
-  
-  // Mark conversation as unread
-  const handleMarkAsUnread = async (e: React.MouseEvent, contactId: string) => {
-    e.stopPropagation();
-    setActiveDropdown(null);
     
-    try {
-      await markConversationAsUnread(contactId, true);
-      toast.success('Chat marked as unread');
-    } catch (error) {
-      toast.error('Failed to mark as unread');
-    }
-  };
-  
-  // Delete conversation
-  const handleDeleteConversation = async (e: React.MouseEvent, contactId: string) => {
-    e.stopPropagation();
-    setActiveDropdown(null);
-    
-    if (confirm('Are you sure you want to delete this conversation? This will permanently remove all messages.')) {
-      try {
-        const toastId = toast.loading('Deleting chat...');
-        await deleteConversation(contactId);
-        toast.success('Chat deleted successfully', { id: toastId });
-      } catch (error) {
-        toast.error('Failed to delete chat');
+    // Process group chats
+    for (const [groupId, group] of Object.entries(groups)) {
+      const conversation = conversations[groupId];
+      
+      // Skip if this group doesn't have a conversation entry yet
+      if (!conversation) continue;
+      
+      const lastMessage = conversation.messages[conversation.messages.length - 1];
+      
+      // Find sender name for last message if available
+      let lastMessageSender = '';
+      if (lastMessage && lastMessage.senderId !== user?.id) {
+        const sender = group.members.find(m => m.user_id === lastMessage.senderId);
+        if (sender) {
+          lastMessageSender = sender.display_name.split(' ')[0] + ': ';
+        }
       }
+      
+      items.push({
+        id: groupId,
+        name: group.name,
+        avatar: group.avatar_url,
+        lastMessage: lastMessage ? (lastMessageSender + lastMessage.text) : '',
+        timestamp: lastMessage?.timestamp || conversation._lastUpdated || group.created_at || 0,
+        unreadCount: conversation.messages.filter(
+          msg => msg.senderId !== user?.id && msg.status !== 'read'
+        ).length,
+        memberCount: group.members.length,
+        isPinned: conversation.isPinned || false,
+        isGroup: true
+      });
+    }
+    
+    // Sort by pinned first, then by timestamp
+    return items
+      .filter(item => {
+        if (!searchQuery) return true;
+        return item.name.toLowerCase().includes(searchQuery.toLowerCase());
+      })
+      .sort((a, b) => {
+        // Pinned items at the top
+        if (a.isPinned && !b.isPinned) return -1;
+        if (!a.isPinned && b.isPinned) return 1;
+        
+        // Then sort by timestamp (most recent first)
+        const timeA = typeof a.timestamp === 'string' ? new Date(a.timestamp).getTime() : a.timestamp;
+        const timeB = typeof b.timestamp === 'string' ? new Date(b.timestamp).getTime() : b.timestamp;
+        return timeB - timeA;
+      });
+  }, [conversations, contacts, searchQuery, groups, user?.id]);
+  
+  const openChat = (chatId: string) => {
+    navigate(`/chat/${chatId}`);
+  };
+  
+  const formatTimestamp = (timestamp: string | number) => {
+    if (!timestamp) return '';
+    
+    const date = typeof timestamp === 'string' ? new Date(timestamp) : new Date(timestamp);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) {
+      // Today: show time
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } else if (diffDays === 1) {
+      // Yesterday
+      return 'Yesterday';
+    } else if (diffDays < 7) {
+      // Within last week: show day name
+      return date.toLocaleDateString([], { weekday: 'short' });
+    } else {
+      // Older: show date
+      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
     }
   };
   
-  // Toggle dropdown menu
-  const toggleDropdown = (e: React.MouseEvent, contactId: string) => {
-    e.stopPropagation();
-    setActiveDropdown(activeDropdown === contactId ? null : contactId);
-  };
-
   return (
-    <div className="w-80 border-r border-gray-200 dark:border-dark-700 flex flex-col bg-white dark:bg-dark-900 transition-colors duration-200">
-      {/* Header */}
+    <div className="w-80 flex-shrink-0 border-r border-gray-200 dark:border-dark-700 flex flex-col transition-colors duration-200">
       <div className="p-4 border-b border-gray-200 dark:border-dark-700">
-        <div className="flex justify-between items-center mb-3">
-          <h2 className="text-lg font-medium text-gray-900 dark:text-white">Chats</h2>
-          <div className="flex space-x-1">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Chats</h2>
+          <div className="flex space-x-2">
             <button
-              onClick={() => setShowNewChatModal(true)}
-              className="p-1.5 text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-secondary-400 rounded-full bg-gray-100 dark:bg-dark-800 hover:bg-gray-200 dark:hover:bg-dark-700 transition-colors"
-              title="New Chat"
+              onClick={() => setIsNewChatModalOpen(true)}
+              className="text-gray-600 dark:text-gray-300 hover:text-primary-600 dark:hover:text-secondary-400 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-dark-600 transition-colors"
+              aria-label="New chat"
+              title="New chat"
             >
-              <PlusIcon className="h-5 w-5" />
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                <path d="M10 2a1 1 0 011 1v6h6a1 1 0 110 2h-6v6a1 1 0 11-2 0v-6H3a1 1 0 110-2h6V3a1 1 0 011-1z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setIsNewGroupModalOpen(true)}
+              className="text-gray-600 dark:text-gray-300 hover:text-primary-600 dark:hover:text-secondary-400 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-dark-600 transition-colors"
+              aria-label="New group"
+              title="New group"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                <path d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 00-6 6v1h12v-1a6 6 0 00-6-6zM16 8a2 2 0 100-4 2 2 0 000 4zM17.5 9.25a4 4 0 00-2.5.75v4.5c0 .9.233 1.75.65 2.5h1.85a5 5 0 003-4.5V11a2 2 0 00-3-1.75z" />
+              </svg>
             </button>
           </div>
         </div>
-
-        {/* Search */}
         <div className="relative">
-          <MagnifyingGlassIcon className="h-5 w-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500" />
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg className="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+            </svg>
+          </div>
           <input
             type="text"
-            placeholder="Search chats"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-gray-100 dark:bg-dark-800 text-gray-900 dark:text-white border-0 rounded-xl py-2 pl-10 pr-9 focus:ring-1 focus:ring-primary-500 dark:focus:ring-secondary-500 focus:bg-white dark:focus:bg-dark-700 placeholder-gray-400 dark:placeholder-gray-500 transition-colors"
+            className="block w-full bg-gray-100 dark:bg-dark-700 border-transparent focus:border-primary-500 dark:focus:border-secondary-500 focus:ring-1 focus:ring-primary-500 dark:focus:ring-secondary-500 rounded-md pl-10 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 transition-colors"
+            placeholder="Search chats..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
           />
-          {searchTerm && (
-            <button
-              onClick={() => setSearchTerm('')}
-              className="absolute right-3 top-1/2 transform -translate-y-1/2"
-            >
-              <XMarkIcon className="h-4 w-4 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300" />
-            </button>
-          )}
         </div>
       </div>
-
-      {/* Chats List */}
+      
       <div className="flex-1 overflow-y-auto">
-        {sortedChats.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full p-4 text-center">
-            {searchTerm ? (
-              <>
-                <p className="text-gray-500 dark:text-gray-400 mb-1">No chats found</p>
-                <p className="text-sm text-gray-400 dark:text-gray-500">
-                  Try a different search term
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="text-gray-500 dark:text-gray-400 mb-1">You don't have any active conversations</p>
-                <button
-                  onClick={() => setShowNewChatModal(true)}
-                  className="mt-2 px-3 py-1.5 text-sm text-white bg-primary-600 dark:bg-secondary-600 hover:bg-primary-700 dark:hover:bg-secondary-700 rounded-lg transition-colors focus:outline-none"
-                >
-                  Start a New Chat
-                </button>
-              </>
-            )}
+        {chatItems.length === 0 ? (
+          <div className="p-4 text-center text-gray-500 dark:text-gray-400">
+            {searchQuery ? 'No chats found for your search' : 'No chats yet'}
           </div>
         ) : (
-          <ul className="divide-y divide-gray-200 dark:divide-dark-700">
-            {sortedChats.map((contact) => {
-              const contactId = contact.contact_id;
-              const isActive = contactId === activeConversationId;
-              const conversation = conversations[contactId] || {};
-              const isPinned = conversation.isPinned;
-              const isUnread = conversation.isUnread;
-              
-              // Get last message
-              const messages = conversation.messages || [];
-              const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
-
-              return (
-                <li
-                  key={contactId}
-                  onClick={() => selectChat(contactId)}
-                  className={`
-                    cursor-pointer transition-all duration-200 animate-fade-in relative
-                    ${isActive ? 'bg-primary-50 dark:bg-dark-800' : 'hover:bg-gray-50 dark:hover:bg-dark-800'}
-                    ${isPinned ? 'border-l-4 border-primary-500 dark:border-secondary-500' : ''}
-                  `}
-                >
-                  <div className="flex items-center py-3 px-4">
-                    <div className="relative flex-shrink-0">
-                      <img
-                        className={`h-12 w-12 rounded-full object-cover ${isActive ? 'ring-2 ring-primary-500 dark:ring-secondary-500' : ''}`}
-                        src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
-                        alt={contact.contact_display_name}
-                      />
-                      <div
-                        className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white dark:border-dark-900 ${
-                          contact.contact_status === 'online'
-                            ? 'bg-green-500'
-                            : contact.contact_status === 'away'
-                            ? 'bg-yellow-500'
-                            : 'bg-gray-500'
-                        }`}
-                      ></div>
-                    </div>
-                    <div className="ml-3 flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <p className={`text-sm font-medium truncate ${isActive ? 'text-primary-600 dark:text-secondary-400' : 'text-gray-900 dark:text-white'} ${isUnread ? 'font-bold' : ''}`}>
-                          {contact.contact_display_name}
-                          {isPinned && (
-                            <span className="ml-1 text-primary-500 dark:text-secondary-500 inline-block transform -rotate-45">
-                              <MapPinIconSolid className="h-3 w-3 inline" />
-                            </span>
-                          )}
-                        </p>
-                        {isUnread && (
-                          <span className="ml-2 bg-primary-600 dark:bg-secondary-600 text-white text-xs px-2 py-0.5 rounded-full animate-scale-in">
-                            New
-                          </span>
-                        )}
-                      </div>
-                      <p className={`text-xs truncate ${isActive ? 'text-primary-500 dark:text-secondary-500' : 'text-gray-500 dark:text-gray-400'}`}>
-                        {lastMessage ? (
-                          <>
-                            {lastMessage.senderId === contact.contact_id ? '' : 'You: '}
-                            {lastMessage.text.length > 30 
-                              ? lastMessage.text.substring(0, 30) + '...' 
-                              : lastMessage.text}
-                          </>
-                        ) : (
-                          'No messages yet'
-                        )}
-                      </p>
-                      {lastMessage && (
-                        <div className="flex items-center justify-end mt-1 text-xs text-gray-400 dark:text-gray-500">
-                          {lastMessage.timestamp && formatRelativeTime(lastMessage.timestamp)}
-                        </div>
+          <div className="divide-y divide-gray-200 dark:divide-dark-700">
+            {chatItems.map((chat) => (
+              <div
+                key={chat.id}
+                className={`p-3 flex items-center cursor-pointer hover:bg-gray-50 dark:hover:bg-dark-800 transition-colors ${
+                  activeConversationId === chat.id ? 'bg-gray-100 dark:bg-dark-700' : ''
+                }`}
+                onClick={() => openChat(chat.id)}
+              >
+                <div className="relative flex-shrink-0">
+                  {chat.avatar ? (
+                    <img src={chat.avatar} alt={chat.name} className="h-12 w-12 rounded-full" />
+                  ) : (
+                    <div className={`h-12 w-12 rounded-full flex items-center justify-center text-white ${
+                      chat.isGroup ? 'bg-primary-600 dark:bg-primary-700' : 'bg-secondary-600 dark:bg-secondary-700'
+                    }`}>
+                      {chat.isGroup ? (
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-6 h-6">
+                          <path d="M10 9a3 3 0 100-6 3 3 0 000 6zM6 8a2 2 0 11-4 0 2 2 0 014 0zM1.49 15.326a.78.78 0 01-.358-.442 3 3 0 01-.41-1.518c0-1.347.827-2.455 2.063-2.894.766-.323 1.697-.251 2.457-.130a6.297 6.297 0 012.834 1.097 3.997 3.997 0 01-.566 1.298 8.307 8.307 0 00-2.91-1.148c-.563-.091-1.232-.134-1.745.025-.512.158-.945.526-1.027 1.047a1 1 0 01-.117.27zM18 8a2 2 0 11-4 0 2 2 0 014 0zM16.51 15.326a.78.78 0 00.358-.442 3 3 0 00.41-1.518c0-1.347-.827-2.455-2.063-2.894-.766-.323-1.697-.251-2.457-.13a6.297 6.297 0 00-2.834 1.097 3.997 3.997 0 00.566 1.298 8.307 8.307 0 012.91-1.148c.563-.091 1.232-.134 1.745.025.512.158.945.526 1.027 1.047a1 1 0 00.117.27zM7.31 10.13a1.94 1.94 0 00-.128.32c.562.11 1.116.262 1.649.453.383.144.761.316 1.106.524a1.9 1.9 0 00-.11-.336 1.867 1.867 0 00-1.01-.98 1.872 1.872 0 00-1.507.02z" />
+                        </svg>
+                      ) : (
+                        chat.name.charAt(0).toUpperCase()
                       )}
                     </div>
-                    
-                    {/* Options button */}
-                    <button 
-                      onClick={(e) => toggleDropdown(e, contactId)}
-                      className="ml-2 p-1 text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-secondary-400 rounded-full hover:bg-gray-100 dark:hover:bg-dark-700"
-                    >
-                      <EllipsisHorizontalIcon className="h-5 w-5" />
-                    </button>
-                    
-                    {/* Dropdown Menu */}
-                    {activeDropdown === contactId && (
-                      <div 
-                        className="absolute right-2 top-14 z-10 w-48 bg-white dark:bg-dark-800 rounded-md shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="py-1">
-                          <button
-                            onClick={(e) => handleTogglePin(e, contactId)}
-                            className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
-                          >
-                            {isPinned ? (
-                              <>
-                                <MapPinIconSolid className="h-4 w-4 mr-2 text-primary-500 dark:text-secondary-500" />
-                                Unpin chat
-                              </>
-                            ) : (
-                              <>
-                                <MapPinIcon className="h-4 w-4 mr-2" />
-                                Pin chat
-                              </>
-                            )}
-                          </button>
-                          <button
-                            onClick={(e) => handleMarkAsUnread(e, contactId)}
-                            className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
-                          >
-                            <EnvelopeIcon className="h-4 w-4 mr-2" />
-                            Mark as unread
-                          </button>
-                          <button
-                            onClick={(e) => handleDeleteConversation(e, contactId)}
-                            className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-dark-700 flex items-center"
-                          >
-                            <TrashIcon className="h-4 w-4 mr-2" />
-                            Delete chat
-                          </button>
-                        </div>
-                      </div>
+                  )}
+                  {!chat.isGroup && (
+                    <StatusIndicator status={chat.status} className="absolute bottom-0 right-0 shadow border-2 border-white dark:border-dark-800" />
+                  )}
+                  {chat.isGroup && chat.memberCount && (
+                    <div className="absolute -bottom-1 -right-1 bg-gray-100 dark:bg-dark-600 text-xs font-medium text-gray-800 dark:text-gray-300 rounded-full h-5 min-w-[1.25rem] flex items-center justify-center px-1 border border-white dark:border-dark-800">
+                      {chat.memberCount}
+                    </div>
+                  )}
+                </div>
+                <div className="ml-3 flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium text-gray-900 dark:text-white truncate flex items-center">
+                      {chat.name}
+                      {chat.isPinned && (
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3 ml-1 text-gray-500 dark:text-gray-400">
+                          <path d="M10 2.5a1 1 0 011 1v10a1 1 0 11-2 0v-10a1 1 0 011-1z" />
+                          <path d="M5.75 5.5a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z" />
+                        </svg>
+                      )}
+                    </p>
+                    <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap ml-1">
+                      {formatTimestamp(chat.timestamp)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                      {chat.lastMessage || (chat.isGroup ? 'New group created' : 'Start chatting')}
+                    </p>
+                    {chat.unreadCount > 0 && (
+                      <NotificationBadge count={chat.unreadCount} />
                     )}
                   </div>
-                </li>
-              );
-            })}
-          </ul>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
       
-      {/* New Chat Modal */}
-      {showNewChatModal && (
-        <NewChatModal onClose={() => setShowNewChatModal(false)} />
-      )}
+      <NewChatModal isOpen={isNewChatModalOpen} onClose={() => setIsNewChatModalOpen(false)} />
+      <NewGroupModal isOpen={isNewGroupModalOpen} onClose={() => setIsNewGroupModalOpen(false)} />
     </div>
   );
 };

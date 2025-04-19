@@ -24,7 +24,13 @@ enum MessageType {
   REPLY = "reply",
   EDIT = "edit",
   DELETE = "delete",
-  TIMEZONE = "timezone"
+  TIMEZONE = "timezone",
+  GROUP_CREATED = "group_created",
+  GROUP_UPDATED = "group_updated",
+  GROUP_DELETED = "group_deleted",
+  GROUP_MEMBER_ADDED = "group_member_added",
+  GROUP_MEMBER_REMOVED = "group_member_removed",
+  GROUP_MEMBER_UPDATED = "group_member_updated"
 }
 
 interface WebSocketMessage {
@@ -334,157 +340,55 @@ class WebSocketService {
       
       switch (data.type) {
         case MessageType.MESSAGE:
-          const message = this.transformMessage(data);
-          
-          if (user && message.senderId !== user.id) {
-            await ensureConversationLoaded(message.senderId);
-          } else if (user) {
-            await ensureConversationLoaded(message.receiverId);
-          }
-          
-          if (message.senderId !== 'unknown' && message.receiverId !== 'unknown') {
-            const contactId = user?.id === message.senderId ? message.receiverId : message.senderId;
-            const conversation = chatStore.conversations[contactId];
-            
-            const isDuplicate = conversation?.messages.some(msg => msg.id === message.id);
-            if (!isDuplicate) {
-              chatStore.addMessage(message);
-              
-              // Notify user if the message is not from them
-              if (user && user.id !== message.senderId) {
-                this._notifyUser(message);
-                this.queueReadReceipt(message.senderId, message.id);
-              }
-            } else {
-              console.log(`[WS Service] Duplicate message ${message.id} received, skipping add.`);
-            }
-          }
+          await this.handleTextMessage(data);
           break;
-          
         case MessageType.TYPING:
-          const senderId = data.from || data.from_user || data.sender_id || data.payload?.sender_id;
-          const isTyping = data.payload?.isTyping ?? data.is_typing;
-          
-          if (senderId) {
-            chatStore.setTypingIndicator(senderId, isTyping);
-          }
+          this.handleTypingIndicator(data);
           break;
-          
-        case MessageType.STATUS:
-          const userId = data.payload?.userId || data.from || data.payload?.from || data.payload?.from_user;
-          if (userId) {
-            const status = data.payload?.status || 'offline';
-            presenceManager.updateContactStatus(userId, status as PresenceState);
-          }
-          break;
-          
         case MessageType.DELIVERY_RECEIPT:
-          if (data.payload?.messageId && data.payload?.contactId) {
-            chatStore.updateMessageStatus(
-              data.payload.messageId, 
-              data.payload.contactId, 
-              'delivered'
-            );
-          }
+          this.handleDeliveryReceipt(data);
           break;
-          
         case MessageType.READ_RECEIPT:
-          // The user who read the message is in 'from' or 'from_user'
-          // The user whose messages were read (and needs the UI update) is in 'to' or 'to_user'
-          const readerId_single = data.from || data.from_user;
-          const originalSenderId_single = data.to || data.to_user; // This is the contactId for the store
-          const messageId_single = String(data.message_id || data.payload?.messageId || '');
-          
-          if (originalSenderId_single && messageId_single) {
-            // console.log(`[WS Service] Handling READ_RECEIPT for msg ${messageId_single} from reader ${readerId_single} for sender ${originalSenderId_single}`);
-            // Use originalSenderId_single as the contactId to update the correct conversation
-            chatStore.updateMessageStatus(messageId_single, originalSenderId_single, 'read');
-            this.notifyEventHandlers(); // Notify generic handlers
-          }
+          this.handleReadReceipt(data);
           break;
-          
         case MessageType.READ_RECEIPT_BATCH:
-          const readerId_batch = data.from || data.from_user;
-          // Use contact_id from the message payload, as this correctly identifies
-          // the conversation partner (original sender) even when the message is
-          // received by the reader's other devices.
-          const contactId_batch = data.contact_id || data.payload?.contactId;
-          const messageIds_batch = (data.message_ids || data.payload?.messageIds || []) as string[];
-          
-          if (contactId_batch && messageIds_batch.length > 0) {
-            // console.log(`[WS Service] Handling READ_RECEIPT_BATCH for ${messageIds_batch.length} messages from reader ${readerId_batch} for contact ${contactId_batch}`);
-            // Use contactId_batch to update the correct conversation in the store
-            messageIds_batch.forEach(msgId => {
-              chatStore.updateMessageStatus(String(msgId), contactId_batch, 'read');
-            });
-            this.notifyEventHandlers(); // Notify generic handlers
-          }
+          this.handleReadReceiptBatch(data);
           break;
-          
         case MessageType.PRESENCE:
-          const presenceUserId = data.from || data.from_user || data.payload?.userId;
-          const presenceStatus = data.payload?.status || data.status || 'offline';
-          
-          if (presenceUserId) {
-            presenceManager.updateContactStatus(presenceUserId, presenceStatus as PresenceState);
-          }
+          this.handlePresenceUpdate(data);
           break;
-          
-        case MessageType.EDIT:
-          const editData = data.payload || {};
-          const editMessageId = String(data.message_id || editData.messageId || '');
-          const editedText = data.text || editData.text || '';
-          const editedAt = data.edited_at || editData.editedAt || new Date().toISOString();
-          const editorId = data.from || data.from_user;
-          
-          if (editMessageId && editedText && editorId) {
-            const contactId = user?.id === editorId ? data.to || data.to_user : editorId;
-            
-            if (contactId) {
-              console.log(`[WS Service] Handling EDIT for msg ${editMessageId} in contact ${contactId}`);
-              chatStore.updateEditedMessage(editMessageId, contactId, editedText, editedAt);
-              this.notifyEventHandlers();
-            }
-          }
-          break;
-          
-        case MessageType.DELETE:
-          const deleteData = data.payload || {};
-          const deleteMessageId = String(data.message_id || deleteData.messageId || '');
-          const deletedAt = data.deleted_at || deleteData.deletedAt || new Date().toISOString();
-          const deleterId = data.from || data.from_user;
-          
-          if (deleteMessageId && deleterId) {
-            const contactId = user?.id === deleterId ? data.to || data.to_user : deleterId;
-            
-            if (contactId) {
-              console.log(`[WS Service] Handling DELETE for msg ${deleteMessageId} in contact ${contactId}`);
-              chatStore.updateDeletedMessage(deleteMessageId, contactId, deletedAt);
-              this.notifyEventHandlers();
-            }
-          }
-          break;
-          
         case MessageType.REPLY:
-          const replyMessage = this.transformMessage(data);
-          
-          if (replyMessage.senderId !== 'unknown' && replyMessage.receiverId !== 'unknown') {
-            if (data.payload && data.payload.reply_to) {
-              replyMessage.replyTo = data.payload.reply_to;
-            }
-            
-            chatStore.addMessage(replyMessage);
-            
-            if (user && user.id !== replyMessage.senderId) {
-              this._notifyUser(replyMessage);
-              this.queueReadReceipt(replyMessage.senderId, replyMessage.id);
-            }
-          }
+          await this.handleReplyMessage(data);
           break;
-          
+        case MessageType.EDIT:
+          this.handleEditMessage(data);
+          break;
+        case MessageType.DELETE:
+          this.handleDeleteMessage(data);
+          break;
+        case MessageType.STATUS:
+          // Status messages are just acknowledgments
+          break;
         case MessageType.ERROR:
-          const errorDetails = data.payload?.message || 'Unknown server error';
-          this.notifyErrorHandlers(errorDetails);
+          this.handleErrorMessage(data);
+          break;
+        case MessageType.GROUP_CREATED:
+          this.handleGroupCreated(data);
+          break;
+        case MessageType.GROUP_UPDATED:
+          this.handleGroupUpdated(data);
+          break;
+        case MessageType.GROUP_DELETED:
+          this.handleGroupDeleted(data);
+          break;
+        case MessageType.GROUP_MEMBER_ADDED:
+          this.handleGroupMemberAdded(data);
+          break;
+        case MessageType.GROUP_MEMBER_REMOVED:
+          this.handleGroupMemberRemoved(data);
+          break;
+        case MessageType.GROUP_MEMBER_UPDATED:
+          this.handleGroupMemberUpdated(data);
           break;
       }
 
@@ -820,6 +724,27 @@ class WebSocketService {
     }
     
     this.queueReadReceipt(contactId, messageId);
+  }
+  
+  sendDeliveryReceipt(contactId: string, messageId: string) {
+    if (!contactId || !messageId) {
+      return;
+    }
+    
+    const { user } = useAuthStore.getState();
+    if (!user) {
+      return;
+    }
+    
+    this.send({
+      type: MessageType.DELIVERY_RECEIPT,
+      from: user.id,
+      to: contactId,
+      payload: {
+        messageId,
+        contactId
+      }
+    });
   }
   
   getConnectionState() {
@@ -1227,69 +1152,490 @@ class WebSocketService {
     }
   }
 
-  private async _notifyUser(message: Message) {
-    // Only notify if the window/tab is currently NOT focused
-    if (!document.hasFocus()) {
-      console.log("[WS Service] Window not focused, sending notification.");
-
-      // 1. Play Sound
-      this._playNotificationSound(); 
-
-      // 2. Show Visual Notification
-      const { contacts } = useContactsStore.getState();
-      const sender = contacts.find(c => c.contact_id === message.senderId);
-      const senderName = sender?.contact_display_name || "Unknown Sender";
-      const notificationBody = message.text || "Sent an attachment"; // Handle empty text messages
-
-      // Check if running in Tauri environment
-      if ((window as any).__TAURI__) {
-        console.log("[WS Service] Tauri environment detected.");
+  private async _notifyUser(message: Message & { senderName?: string }) {
+    const isGroupMessage = !!message.groupId;
+    
+    try {
+      // Play notification sound
+      await this._playNotificationSound();
+      
+      // Get title for notification
+      let title;
+      if (isGroupMessage) {
+        const group = useChatStore.getState().groups[message.groupId!];
+        title = group ? `${message.senderName || 'Someone'} in ${group.name}` : message.senderName || 'New message';
+      } else {
+        title = message.senderName || 'New message';
+      }
+      
+      // Build body text for notification
+      const body = message.text || (message.attachments?.length ? 'Sent an attachment' : 'New message');
+      
+      // For Tauri app, use their notification API
+      if (typeof isPermissionGranted === 'function') {
         let permissionGranted = await isPermissionGranted();
         if (!permissionGranted) {
-          const permissionResult = await requestPermission();
-          permissionGranted = permissionResult === "granted";
+          const permission = await requestPermission();
+          permissionGranted = permission === "granted";
         }
-
+        
         if (permissionGranted) {
-          console.log("[WS Service] Tauri notification permission granted. Sending notification.");
           sendNotification({
-            title: `New message from ${senderName}`,
-            body: notificationBody,
+            title,
+            body,
+            icon: 'icon.png'
           });
-        } else {
-          console.log("[WS Service] Tauri notification permission denied.");
-        }
-      } else {
-        // Standard Web Notifications API
-        console.log("[WS Service] Web environment detected.");
-        if (!("Notification" in window)) {
-          console.log("This browser does not support desktop notification");
-        } else if (Notification.permission === "granted") {
-          console.log("[WS Service] Web notification permission granted. Sending notification.");
-          new Notification(`New message from ${senderName}`, {
-            body: notificationBody,
-            // icon: '/path/to/icon.png' // Optional: Add an icon
-          });
-        } else if (Notification.permission !== "denied") {
-          console.log("[WS Service] Requesting web notification permission.");
-          Notification.requestPermission().then((permission) => {
-            if (permission === "granted") {
-              console.log("[WS Service] Web notification permission granted after request. Sending notification.");
-              new Notification(`New message from ${senderName}`, {
-                body: notificationBody,
-                // icon: '/path/to/icon.png' // Optional: Add an icon
-              });
-            } else {
-              console.log("[WS Service] Web notification permission denied after request.");
-            }
-          });
-        } else {
-          console.log("[WS Service] Web notification permission denied.");
         }
       }
-    } else {
-      console.log("[WS Service] Window focused, skipping notification.");
+      // For web app, use browser notifications
+      else if ('Notification' in window) {
+        if (Notification.permission === 'granted') {
+          new Notification(title, {
+            body,
+            icon: '/icon.png'
+          });
+        } else if (Notification.permission !== 'denied') {
+          const permission = await Notification.requestPermission();
+          if (permission === 'granted') {
+            new Notification(title, {
+              body,
+              icon: '/icon.png'
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Notification Error]', error);
     }
+  }
+
+  private async handleTextMessage(data: WebSocketMessage) {
+    try {
+      // Get the message data from the payload
+      const {
+        id: messageId,
+        text,
+        timestamp,
+        status,
+        attachments
+      } = data.payload || {};
+      
+      // Skip if missing required fields
+      if (!messageId || !text) {
+        return;
+      }
+      
+      // Determine if this is a group message
+      const isGroupMessage = !!data.group_id;
+      
+      // Create a new message object
+      const newMessage: Message = {
+        id: messageId,
+        senderId: data.from || '',
+        receiverId: data.to || '',
+        text,
+        timestamp,
+        status: status || 'sent',
+        attachments,
+        groupId: isGroupMessage ? data.group_id : undefined
+      };
+      
+      // Access the chat store
+      const chatStore = useChatStore.getState();
+      
+      // Get the sender's display name
+      let senderName = data.from || '';
+      if (isGroupMessage) {
+        // For group messages, look up the sender name in the group members
+        const group = chatStore.groups[data.group_id];
+        if (group) {
+          const sender = group.members.find(m => m.user_id === data.from);
+          if (sender) {
+            senderName = sender.display_name;
+          }
+        }
+      } else {
+        // For direct messages, check if the sender is a contact
+        const contacts = useContactsStore.getState().contacts;
+        const sender = contacts.find(c => c.contact_id === data.from);
+        if (sender) {
+          senderName = sender.contact_display_name;
+        }
+      }
+      
+      // Add the message to the store
+      chatStore.addMessage(newMessage);
+      
+      // If message is from someone else, send a read receipt
+      if (data.from !== useAuthStore.getState().user?.id) {
+        const conversationId = isGroupMessage ? data.group_id : data.from;
+        
+        // Only automatically send read receipt if we're viewing this conversation
+        if (chatStore.activeConversationId === conversationId) {
+          this.sendReadReceipt(conversationId, messageId);
+        }
+        
+        // For direct messages, also send delivery receipt
+        if (!isGroupMessage && data.to) {
+          this.sendDeliveryReceipt(data.from || '', messageId);
+        }
+        
+        // Show notification if not the active conversation
+        if (chatStore.activeConversationId !== conversationId) {
+          await this._notifyUser({
+            ...newMessage,
+            senderName // Add sender name for notification
+          } as any);
+        }
+      }
+    } catch (error) {
+      console.error('Error handling text message:', error);
+      this.notifyErrorHandlers(error);
+    }
+  }
+
+  private async handleGroupCreated(data: WebSocketMessage) {
+    const chatStore = useChatStore.getState();
+    const groupData = data.payload;
+    
+    // Update groups in store
+    if (groupData && groupData.id) {
+      const existingGroups = { ...chatStore.groups };
+      existingGroups[groupData.id] = groupData;
+      
+      useChatStore.setState({
+        groups: existingGroups
+      });
+    }
+  }
+  
+  private async handleGroupUpdated(data: WebSocketMessage) {
+    const chatStore = useChatStore.getState();
+    const groupData = data.payload;
+    
+    if (groupData && groupData.id) {
+      const existingGroups = { ...chatStore.groups };
+      
+      // Merge with existing group data if available
+      if (existingGroups[groupData.id]) {
+        existingGroups[groupData.id] = {
+          ...existingGroups[groupData.id],
+          ...groupData
+        };
+      } else {
+        existingGroups[groupData.id] = groupData;
+      }
+      
+      useChatStore.setState({
+        groups: existingGroups
+      });
+    }
+  }
+  
+  private async handleGroupDeleted(data: WebSocketMessage) {
+    const chatStore = useChatStore.getState();
+    const groupId = data.payload?.group_id;
+    
+    if (groupId) {
+      const { [groupId]: _, ...remainingGroups } = chatStore.groups;
+      const { [groupId]: __, ...remainingConversations } = chatStore.conversations;
+      
+      useChatStore.setState({
+        groups: remainingGroups,
+        conversations: remainingConversations,
+        // Reset active conversation if it was this group
+        activeConversationId: chatStore.activeConversationId === groupId ? null : chatStore.activeConversationId
+      });
+    }
+  }
+  
+  private async handleGroupMemberAdded(data: WebSocketMessage) {
+    const chatStore = useChatStore.getState();
+    const { group_id, added_member_id } = data.payload || {};
+    
+    if (group_id) {
+      // Refresh the group data from the server
+      await chatStore.fetchGroup(group_id);
+      
+      // If the added member is the current user, make sure conversation is created
+      const { user } = useAuthStore.getState();
+      if (added_member_id === user?.id && !chatStore.conversations[group_id]) {
+        chatStore.setActiveGroup(group_id);
+      }
+    }
+  }
+  
+  private async handleGroupMemberRemoved(data: WebSocketMessage) {
+    const chatStore = useChatStore.getState();
+    const { group_id, removed_member_id } = data.payload || {};
+    
+    if (group_id) {
+      // Refresh the group data from the server
+      await chatStore.fetchGroup(group_id);
+      
+      // If the removed member is the current user, remove the group from active conversations
+      const { user } = useAuthStore.getState();
+      if (removed_member_id === user?.id) {
+        const { [group_id]: _, ...remainingConversations } = chatStore.conversations;
+        
+        useChatStore.setState({
+          conversations: remainingConversations,
+          // Reset active conversation if it was this group
+          activeConversationId: chatStore.activeConversationId === group_id ? null : chatStore.activeConversationId
+        });
+      }
+    }
+  }
+  
+  private async handleGroupMemberUpdated(data: WebSocketMessage) {
+    const chatStore = useChatStore.getState();
+    const { group_id } = data.payload || {};
+    
+    if (group_id) {
+      // Simply refresh the group data from the server
+      await chatStore.fetchGroup(group_id);
+    }
+  }
+  
+  async sendGroupMessage(groupId: string, text: string, attachments: (File | FileAttachment)[] = []) {
+    const { user } = useAuthStore.getState();
+    if (!user) {
+      throw new Error('User not authenticated');
+    }
+    
+    try {
+      // First, upload any file attachments
+      const processedAttachments: FileAttachment[] = [];
+      
+      for (const attachment of attachments) {
+        if (attachment instanceof File) {
+          const fileAttachment = await this.uploadFileToStorage(attachment);
+          processedAttachments.push(fileAttachment);
+        } else {
+          processedAttachments.push(attachment);
+        }
+      }
+      
+      // Generate message ID
+      const messageId = crypto.randomUUID();
+      const timestamp = new Date().toISOString();
+      
+      // Create the message to send
+      const message: WebSocketMessage = {
+        type: MessageType.MESSAGE,
+        from: user.id,
+        group_id: groupId,
+        payload: {
+          id: messageId,
+          text,
+          timestamp,
+          status: 'sent',
+          attachments: processedAttachments.length > 0 ? processedAttachments : undefined
+        }
+      };
+      
+      // Add the message to the chat store optimistically
+      const chatStore = useChatStore.getState();
+      const newMessage: Message = {
+        id: messageId,
+        senderId: user.id,
+        receiverId: '', // Not applicable for group messages
+        text,
+        timestamp,
+        status: 'sent',
+        attachments: processedAttachments,
+        groupId
+      };
+      
+      chatStore.addMessage(newMessage);
+      
+      // Send the message
+      this.send(message);
+      
+      return messageId;
+    } catch (error) {
+      console.error('Error sending group message:', error);
+      throw error;
+    }
+  }
+
+  private handleTypingIndicator(data: WebSocketMessage) {
+    const senderId = data.from || data.from_user || data.sender_id || data.payload?.sender_id;
+    const isTyping = data.payload?.isTyping ?? data.is_typing;
+    
+    if (senderId) {
+      useChatStore.getState().setTypingIndicator(senderId, !!isTyping);
+    }
+  }
+  
+  private handleDeliveryReceipt(data: WebSocketMessage) {
+    if (data.payload?.messageId && data.payload?.contactId) {
+      useChatStore.getState().updateMessageStatus(
+        data.payload.messageId, 
+        data.payload.contactId, 
+        'delivered'
+      );
+    }
+  }
+  
+  private handleReadReceipt(data: WebSocketMessage) {
+    // The user who read the message is in 'from' or 'from_user'
+    // The user whose messages were read (and needs the UI update) is in 'to' or 'to_user'
+    const readerId = data.from || data.from_user;
+    const originalSenderId = data.to || data.to_user; // This is the contactId for the store
+    const messageId = String(data.message_id || data.payload?.messageId || '');
+    
+    if (originalSenderId && messageId) {
+      // Use originalSenderId as the contactId to update the correct conversation
+      useChatStore.getState().updateMessageStatus(messageId, originalSenderId, 'read');
+      this.notifyEventHandlers(); // Notify generic handlers
+    }
+  }
+  
+  private handleReadReceiptBatch(data: WebSocketMessage) {
+    const readerId = data.from || data.from_user;
+    // Use contact_id from the message payload, as this correctly identifies
+    // the conversation partner (original sender) even when the message is
+    // received by the reader's other devices.
+    const contactId = data.contact_id || data.payload?.contactId;
+    const messageIds = (data.message_ids || data.payload?.messageIds || []) as string[];
+    
+    if (contactId && messageIds.length > 0) {
+      // Use contactId to update the correct conversation in the store
+      messageIds.forEach(msgId => {
+        useChatStore.getState().updateMessageStatus(String(msgId), contactId, 'read');
+      });
+      this.notifyEventHandlers(); // Notify generic handlers
+    }
+  }
+  
+  private handlePresenceUpdate(data: WebSocketMessage) {
+    const presenceUserId = data.from || data.from_user || data.payload?.userId;
+    const presenceStatus = data.payload?.status || data.status || 'offline';
+    
+    if (presenceUserId) {
+      presenceManager.updateContactStatus(presenceUserId, presenceStatus as PresenceState);
+    }
+  }
+  
+  private async handleReplyMessage(data: WebSocketMessage) {
+    try {
+      // Get the message data from the payload
+      const {
+        id: messageId,
+        text,
+        timestamp,
+        status,
+        attachments,
+        reply_to: replyTo
+      } = data.payload || {};
+      
+      // Skip if missing required fields
+      if (!messageId || !text) {
+        return;
+      }
+      
+      // Determine if this is a group message
+      const isGroupMessage = !!data.group_id;
+      
+      // Create a new message object
+      const newMessage: Message = {
+        id: messageId,
+        senderId: data.from || '',
+        receiverId: data.to || '',
+        text,
+        timestamp,
+        status: status || 'sent',
+        attachments,
+        replyTo,
+        groupId: isGroupMessage ? data.group_id : undefined
+      };
+      
+      // Add the message to the store
+      const chatStore = useChatStore.getState();
+      chatStore.addMessage(newMessage);
+      
+      // If message is from someone else, send a read receipt
+      if (data.from !== useAuthStore.getState().user?.id) {
+        const conversationId = isGroupMessage ? data.group_id : data.from;
+        
+        // Only automatically send read receipt if we're viewing this conversation
+        if (chatStore.activeConversationId === conversationId) {
+          this.sendReadReceipt(conversationId, messageId);
+        }
+        
+        // Show notification if not the active conversation
+        if (chatStore.activeConversationId !== conversationId) {
+          // Get the sender's display name
+          let senderName = data.from || '';
+          if (isGroupMessage) {
+            // For group messages, look up the sender name in the group members
+            const group = chatStore.groups[data.group_id];
+            if (group) {
+              const sender = group.members.find(m => m.user_id === data.from);
+              if (sender) {
+                senderName = sender.display_name;
+              }
+            }
+          } else {
+            // For direct messages, check if the sender is a contact
+            const contacts = useContactsStore.getState().contacts;
+            const sender = contacts.find(c => c.contact_id === data.from);
+            if (sender) {
+              senderName = sender.contact_display_name;
+            }
+          }
+          
+          await this._notifyUser({
+            ...newMessage,
+            senderName
+          } as any);
+        }
+      }
+    } catch (error) {
+      console.error('Error handling reply message:', error);
+      this.notifyErrorHandlers(error);
+    }
+  }
+  
+  private handleEditMessage(data: WebSocketMessage) {
+    const editData = data.payload || {};
+    const editMessageId = String(data.message_id || editData.messageId || '');
+    const editedText = data.text || editData.text || '';
+    const editedAt = data.edited_at || editData.editedAt || new Date().toISOString();
+    const editorId = data.from || data.from_user;
+    
+    if (editMessageId && editedText && editorId) {
+      const user = useAuthStore.getState().user;
+      const contactId = user?.id === editorId ? data.to || data.to_user : editorId;
+      
+      if (contactId) {
+        useChatStore.getState().updateEditedMessage(editMessageId, contactId, editedText, editedAt);
+        this.notifyEventHandlers();
+      }
+    }
+  }
+  
+  private handleDeleteMessage(data: WebSocketMessage) {
+    const deleteData = data.payload || {};
+    const deleteMessageId = String(data.message_id || deleteData.messageId || '');
+    const deletedAt = data.deleted_at || deleteData.deletedAt || new Date().toISOString();
+    const deleterId = data.from || data.from_user;
+    
+    if (deleteMessageId && deleterId) {
+      const user = useAuthStore.getState().user;
+      const contactId = user?.id === deleterId ? data.to || data.to_user : deleterId;
+      
+      if (contactId) {
+        useChatStore.getState().updateDeletedMessage(deleteMessageId, contactId, deletedAt);
+        this.notifyEventHandlers();
+      }
+    }
+  }
+  
+  private handleErrorMessage(data: WebSocketMessage) {
+    const errorDetails = data.payload?.message || 'Unknown server error';
+    this.notifyErrorHandlers(errorDetails);
   }
 }
 

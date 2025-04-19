@@ -26,6 +26,7 @@ export interface Message {
   isDeleted?: boolean;
   deletedAt?: string;
   receiverId?: string;
+  groupId?: string;
 }
 
 // User related types
@@ -49,7 +50,30 @@ export interface Contact {
   contact_phone?: string;
   contact_email?: string;
   contact_status?: UserStatus;
+  presence_status?: 'online' | 'away' | 'offline';
   last_seen?: string | number;
+}
+
+// Group chat related types
+export interface GroupMember {
+  user_id: string;
+  display_name: string;
+  role: 'admin' | 'member';
+  avatar_url?: string;
+  joined_at: string | number;
+  status?: UserStatus;
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  description?: string;
+  avatar_url?: string;
+  created_at: string | number;
+  updated_at?: string | number;
+  created_by: string;
+  members: GroupMember[];
+  is_direct_message?: boolean;
 }
 
 // Conversation related types
@@ -61,6 +85,8 @@ export interface Conversation {
   unreadCount: number;
   createdAt: string | number;
   updatedAt: string | number;
+  isGroup?: boolean;
+  group?: Group;
 }
 
 // UI related types

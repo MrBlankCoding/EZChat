@@ -2,7 +2,7 @@ import React from 'react';
 import { PresenceState } from '../services/presenceManager';
 
 interface StatusIndicatorProps {
-  status: PresenceState | string;
+  status?: PresenceState | string;
   size?: 'sm' | 'md' | 'lg';
   showLabel?: boolean;
   className?: string;
@@ -12,7 +12,7 @@ interface StatusIndicatorProps {
  * A reusable status indicator component that displays online/away/offline status
  */
 const StatusIndicator: React.FC<StatusIndicatorProps> = ({
-  status,
+  status = PresenceState.OFFLINE,
   size = 'md',
   showLabel = false,
   className = ''

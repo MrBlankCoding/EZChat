@@ -25,6 +25,12 @@ class WebSocketMessageType(str, Enum):
     TIMEZONE = "timezone"
     PING = "ping"
     PONG = "pong"
+    GROUP_CREATED = "group_created"
+    GROUP_UPDATED = "group_updated"
+    GROUP_DELETED = "group_deleted"
+    GROUP_MEMBER_ADDED = "group_member_added"
+    GROUP_MEMBER_REMOVED = "group_member_removed"
+    GROUP_MEMBER_UPDATED = "group_member_updated"
 
 
 class WebSocketMessage(BaseModel):
@@ -434,8 +440,16 @@ class PongMessage(BaseModel):
     type: str = "pong"
     timestamp: int
 
+    model_config = {"populate_by_name": True}
+
     def dict(self, *args, **kwargs):
-        return {"type": self.type, "timestamp": self.timestamp}
+        d = super().dict(*args, **kwargs)
+        d["payload"] = {"timestamp": self.timestamp}
+        return d
+
+    def json(self, *args, **kwargs):
+        kwargs.setdefault("by_alias", True)
+        return super().model_dump_json(*args, **kwargs)
 
 
 class ReadReceiptBatchMessage(WebSocketMessage):
@@ -456,4 +470,97 @@ class ReadReceiptBatchMessage(WebSocketMessage):
             "contactId": d.pop("contact_id"),
             "timestamp": d.pop("timestamp"),
         }
+        return d
+
+
+# --- Group Event Messages ---
+
+
+class GroupCreatedMessage(WebSocketMessage):
+    """
+    Notification when a new group is created.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.GROUP_CREATED
+    # Payload should contain the full group details (similar to Group schema)
+    payload: Dict[str, Any]
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        d["payload"] = self.payload
+        return d
+
+
+class GroupUpdatedMessage(WebSocketMessage):
+    """
+    Notification when group details are updated.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.GROUP_UPDATED
+    # Payload should contain the updated group details
+    payload: Dict[str, Any]
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        d["payload"] = self.payload
+        return d
+
+
+class GroupDeletedMessage(WebSocketMessage):
+    """
+    Notification when a group is deleted.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.GROUP_DELETED
+    # Payload contains the ID of the deleted group
+    payload: Dict[str, str]  # e.g., {"group_id": "..."}
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        d["payload"] = self.payload
+        return d
+
+
+class GroupMemberAddedMessage(WebSocketMessage):
+    """
+    Notification when a member is added to a group.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.GROUP_MEMBER_ADDED
+    # Payload contains group_id, added_member_id, and potentially updated group details
+    payload: Dict[str, Any]
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        d["payload"] = self.payload
+        return d
+
+
+class GroupMemberRemovedMessage(WebSocketMessage):
+    """
+    Notification when a member is removed (or becomes inactive) from a group.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.GROUP_MEMBER_REMOVED
+    # Payload contains group_id and removed_member_id
+    payload: Dict[str, str]
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        d["payload"] = self.payload
+        return d
+
+
+class GroupMemberUpdatedMessage(WebSocketMessage):
+    """
+    Notification when a member's role or status is updated.
+    """
+
+    type: WebSocketMessageType = WebSocketMessageType.GROUP_MEMBER_UPDATED
+    # Payload contains group_id, updated_member_id, and potentially updated group details
+    payload: Dict[str, Any]
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        d["payload"] = self.payload
         return d

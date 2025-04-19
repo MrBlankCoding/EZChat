@@ -5,7 +5,7 @@ import websocketService from '../services/websocketService';
 import { useAuthStore } from './authStore';
 import { useContactsStore } from './contactsStore';
 import { PresenceState } from '../services/presenceManager';
-import { Attachment } from '../types';
+import { Attachment, Group } from '../types';
 
 export interface FileAttachment {
   type: string;
@@ -31,6 +31,7 @@ export interface Message {
   editedAt?: string;
   isDeleted?: boolean;
   deletedAt?: string;
+  groupId?: string;
 }
 
 export interface Conversation {
@@ -41,11 +42,20 @@ export interface Conversation {
   isUnread?: boolean;
   _lastUpdated?: number;
   contactStatus?: PresenceState;
+  isGroup?: boolean;
+  groupId?: string;
+}
+
+interface GroupConversation extends Conversation {
+  isGroup: true;
+  groupId: string;
+  groupDetails?: Group;
 }
 
 interface ChatState {
   activeConversationId: string | null;
-  conversations: Record<string, Conversation>;
+  conversations: Record<string, Conversation | GroupConversation>;
+  groups: Record<string, Group>;
   isLoading: boolean;
   error: string | null;
   typingIndicators: Record<string, boolean>;
@@ -70,6 +80,18 @@ interface ChatState {
   updateDeletedMessage: (messageId: string, contactId: string, deletedAt?: string) => void;
   sendReply: (contactId: string, text: string, replyToMessageId: string, attachments?: any[]) => Promise<string | undefined>;
   getAllImageAttachments: () => Attachment[];
+
+  // Group chat related methods
+  fetchGroups: () => Promise<void>;
+  fetchGroup: (groupId: string) => Promise<Group | null>;
+  fetchMessagesForGroup: (groupId: string) => Promise<void>;
+  createGroup: (name: string, memberIds: string[], description?: string, avatarUrl?: string) => Promise<Group | null>;
+  updateGroup: (groupId: string, updates: Partial<Group>) => Promise<Group | null>;
+  addGroupMembers: (groupId: string, memberIds: string[]) => Promise<boolean>;
+  removeGroupMember: (groupId: string, memberId: string) => Promise<boolean>;
+  leaveGroup: (groupId: string) => Promise<boolean>;
+  sendGroupMessage: (groupId: string, text: string, attachments?: any[]) => Promise<string | undefined>;
+  setActiveGroup: (groupId: string) => void;
 }
 
 const useChatStore = create<ChatState>()(
@@ -77,6 +99,7 @@ const useChatStore = create<ChatState>()(
     (set, get) => ({
       activeConversationId: null,
       conversations: {},
+      groups: {},
       isLoading: false,
       error: null,
       typingIndicators: {},
@@ -633,19 +656,356 @@ const useChatStore = create<ChatState>()(
         
         console.log(`Found ${allAttachments.length} total image attachments`);
         return allAttachments;
+      },
+      
+      // Group chat methods
+      fetchGroups: async () => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return;
+        }
+        
+        try {
+          set({ isLoading: true, error: null });
+          
+          const response = await apiClient.get('groups');
+          const groups = response.data.reduce((acc: Record<string, Group>, group: Group) => {
+            acc[group.id] = group;
+            return acc;
+          }, {});
+          
+          set({ groups, isLoading: false });
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to fetch groups',
+            isLoading: false
+          });
+        }
+      },
+      
+      fetchGroup: async (groupId: string) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return null;
+        }
+        
+        try {
+          const response = await apiClient.get(`groups/${groupId}`);
+          const group = response.data;
+          
+          set(state => ({
+            groups: {
+              ...state.groups,
+              [groupId]: group
+            }
+          }));
+          
+          return group;
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : `Failed to fetch group ${groupId}`,
+          });
+          return null;
+        }
+      },
+      
+      fetchMessagesForGroup: async (groupId: string) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return;
+        }
+        
+        try {
+          set({ isLoading: true, error: null });
+          
+          const response = await apiClient.get(`groups/${groupId}/messages`);
+          const messages = response.data.map((message: any) => {
+            // Process attachments to ensure they follow the FileAttachment structure
+            const attachments = (message.attachments || []).map((att: any) => {
+              if (typeof att === 'object' && att !== null) {
+                return {
+                  type: att.type || 'file',
+                  url: att.url || '',
+                  name: att.name || 'Unknown file',
+                  size: att.size,
+                  fileType: att.fileType
+                };
+              }
+              return att;
+            });
+            
+            return {
+              id: message.id || message._id,
+              senderId: message.senderId || message.sender_id,
+              receiverId: message.receiverId || message.recipient_id,
+              text: message.text || '',
+              timestamp: message.timestamp || message.created_at,
+              status: message.status || 'sent',
+              attachments: attachments,
+              replyTo: message.reply_to,
+              isEdited: message.is_edited || false,
+              editedAt: message.edited_at,
+              isDeleted: message.is_deleted || false,
+              deletedAt: message.deleted_at,
+              groupId
+            };
+          });
+          
+          const { conversations } = get();
+          const existingConversation = conversations[groupId] || {};
+          
+          set({
+            conversations: {
+              ...conversations,
+              [groupId]: {
+                ...existingConversation,
+                contactId: groupId, // Use groupId as the contactId for consistency
+                messages,
+                isPinned: existingConversation.isPinned || false,
+                isUnread: existingConversation.isUnread || false,
+                isGroup: true,
+                groupId
+              }
+            },
+            isLoading: false
+          });
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to fetch group messages',
+            isLoading: false
+          });
+        }
+      },
+      
+      createGroup: async (name: string, memberIds: string[], description?: string, avatarUrl?: string) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return null;
+        }
+        
+        try {
+          set({ isLoading: true, error: null });
+          
+          const response = await apiClient.post('groups', {
+            name,
+            member_ids: memberIds,
+            description,
+            avatar_url: avatarUrl
+          });
+          
+          const group = response.data;
+          
+          set(state => ({
+            groups: {
+              ...state.groups,
+              [group.id]: group
+            },
+            isLoading: false
+          }));
+          
+          return group;
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to create group',
+            isLoading: false
+          });
+          return null;
+        }
+      },
+      
+      updateGroup: async (groupId: string, updates: Partial<Group>) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return null;
+        }
+        
+        try {
+          set({ isLoading: true, error: null });
+          
+          const response = await apiClient.put(`groups/${groupId}`, updates);
+          const updatedGroup = response.data;
+          
+          set(state => ({
+            groups: {
+              ...state.groups,
+              [groupId]: updatedGroup
+            },
+            isLoading: false
+          }));
+          
+          return updatedGroup;
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to update group',
+            isLoading: false
+          });
+          return null;
+        }
+      },
+      
+      addGroupMembers: async (groupId: string, memberIds: string[]) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return false;
+        }
+        
+        try {
+          set({ isLoading: true, error: null });
+          
+          await apiClient.post(`groups/${groupId}/members`, {
+            member_ids: memberIds
+          });
+          
+          // Refresh group details
+          const updatedGroup = await get().fetchGroup(groupId);
+          
+          set({ isLoading: false });
+          return !!updatedGroup;
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to add group members',
+            isLoading: false
+          });
+          return false;
+        }
+      },
+      
+      removeGroupMember: async (groupId: string, memberId: string) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return false;
+        }
+        
+        try {
+          set({ isLoading: true, error: null });
+          
+          await apiClient.delete(`groups/${groupId}/members/${memberId}`);
+          
+          // Refresh group details
+          const updatedGroup = await get().fetchGroup(groupId);
+          
+          set({ isLoading: false });
+          return !!updatedGroup;
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to remove group member',
+            isLoading: false
+          });
+          return false;
+        }
+      },
+      
+      leaveGroup: async (groupId: string) => {
+        const { user } = useAuthStore.getState();
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return false;
+        }
+        
+        try {
+          set({ isLoading: true, error: null });
+          
+          await apiClient.delete(`groups/${groupId}/members/me`);
+          
+          // Remove group from state
+          set(state => {
+            const { [groupId]: _, ...remainingGroups } = state.groups;
+            const { [groupId]: __, ...remainingConversations } = state.conversations;
+            
+            return {
+              groups: remainingGroups,
+              conversations: remainingConversations,
+              isLoading: false,
+              // If active conversation is the group being left, clear it
+              activeConversationId: state.activeConversationId === groupId ? null : state.activeConversationId
+            };
+          });
+          
+          return true;
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to leave group',
+            isLoading: false
+          });
+          return false;
+        }
+      },
+      
+      sendGroupMessage: async (groupId: string, text: string, attachments = []) => {
+        try {
+          set({ isLoading: true, error: null });
+          
+          const { conversations } = get();
+          if (!conversations[groupId]) {
+            set({
+              conversations: {
+                ...conversations,
+                [groupId]: { 
+                  contactId: groupId, 
+                  messages: [],
+                  isGroup: true,
+                  groupId
+                }
+              }
+            });
+          }
+          
+          // Use websocketService to send group message
+          const messageId = await websocketService.sendGroupMessage(groupId, text, attachments);
+          set({ isLoading: false });
+          return messageId;
+        } catch (error) {
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to send group message',
+            isLoading: false
+          });
+          return undefined;
+        }
+      },
+      
+      setActiveGroup: (groupId: string) => {
+        set({ activeConversationId: groupId });
+        
+        const { conversations, groups } = get();
+        const conversation = conversations[groupId];
+        
+        if (conversation) {
+          if (conversation.isUnread) {
+            get().markMessagesAsRead(groupId);
+          }
+        } else {
+          // Create a new conversation entry for this group
+          const group = groups[groupId];
+          set({
+            conversations: {
+              ...conversations,
+              [groupId]: { 
+                contactId: groupId, 
+                messages: [],
+                isGroup: true,
+                groupId,
+                groupDetails: group
+              }
+            }
+          });
+          
+          // Fetch messages for this group
+          get().fetchMessagesForGroup(groupId);
+        }
       }
     }),
     {
-      name: 'chat-storage',
+      name: 'chat-store',
       partialize: (state) => ({
-        conversations: Object.entries(state.conversations).reduce((acc, [contactId, conversation]) => {
-          acc[contactId] = { 
-            contactId, 
-            isPinned: conversation.isPinned || false,
-            messages: [] 
-          };
-          return acc;
-        }, {} as Record<string, Conversation>)
+        conversations: state.conversations,
+        groups: state.groups,
       }),
     }
   )

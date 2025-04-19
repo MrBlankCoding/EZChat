@@ -19,7 +19,7 @@ load_dotenv()
 from api.routes.user import router as user_router
 from api.routes.chat import router as chat_router
 from api.routes.contact import router as contact_router
-from api.groups import router as group_router
+from api.routes.group import router as group_router
 from websocket.manager import websocket_router
 from db.mongodb import connect_to_mongodb, close_mongodb_connection
 

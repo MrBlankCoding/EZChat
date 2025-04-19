@@ -18,7 +18,10 @@ from schemas import (
     MessageResponse,
 )
 from auth.firebase import get_current_user
-from websocket.manager import manager
+from websocket.manager import connection_manager, ConnectionManager
+
+# Type hint for linter
+connection_manager: ConnectionManager
 
 router = APIRouter()
 
@@ -76,7 +79,7 @@ async def create_group(
 
     # Notify members
     for member_id in member_ids:
-        await manager.send_json_to_user(
+        await connection_manager.send_json_to_user(
             member_id, {"type": "group_created", "payload": new_group}
         )
 
@@ -185,7 +188,7 @@ async def update_group(
         m["user_id"] for m in updated_group["members"] if m["is_active"]
     ]
     for member_id in active_member_ids:
-        await manager.send_json_to_user(
+        await connection_manager.send_json_to_user(
             member_id, {"type": "group_updated", "payload": updated_group}
         )
 
@@ -226,7 +229,7 @@ async def delete_group(
     # Notify active members
     active_member_ids = [m["user_id"] for m in group["members"] if m["is_active"]]
     for member_id in active_member_ids:
-        await manager.send_json_to_user(
+        await connection_manager.send_json_to_user(
             member_id, {"type": "group_deleted", "payload": {"group_id": group_id}}
         )
 
@@ -318,7 +321,7 @@ async def add_group_member(
     }
 
     for member_id in active_member_ids:
-        await manager.send_json_to_user(member_id, notification)
+        await connection_manager.send_json_to_user(member_id, notification)
 
     return updated_group
 
@@ -405,10 +408,10 @@ async def remove_group_member(
     }
 
     for member_id in active_member_ids:
-        await manager.send_json_to_user(member_id, notification)
+        await connection_manager.send_json_to_user(member_id, notification)
 
     # Notify removed member
-    await manager.send_json_to_user(
+    await connection_manager.send_json_to_user(
         user_id,
         {
             "type": "group_member_removed",
@@ -500,7 +503,7 @@ async def update_group_member_role(
     }
 
     for member_id in active_member_ids:
-        await manager.send_json_to_user(member_id, notification)
+        await connection_manager.send_json_to_user(member_id, notification)
 
     return updated_group
 
