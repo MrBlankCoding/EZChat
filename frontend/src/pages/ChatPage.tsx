@@ -60,22 +60,46 @@ const ChatPage = () => {
     const fetchInitialData = async () => {
       setIsLoading(true);
       try {
-        // Fetch contacts
+        // Fetch contacts first
         await fetchContacts();
         
-        // If there's an active conversation or contactId in URL, fetch messages
-        if (contactId) {
-          await fetchMessagesForContact(contactId);
+        // After contacts are loaded, get the current state
+        const currentContacts = useContactsStore.getState().contacts;
+        const currentConversations = useChatStore.getState().conversations;
+
+        // Identify contacts that represent existing conversations
+        const existingConversationContactIds = currentContacts
+          .map(c => c.contact_id)
+          .filter(id => currentConversations[id] !== undefined);
+
+        // Fetch messages for all existing conversations concurrently
+        // We only fetch if the conversation exists but doesn't have messages yet,
+        // or if it's the currently selected one (in case hydration failed partially)
+        const messageFetchPromises = existingConversationContactIds
+          .filter(id => contactId === id || !currentConversations[id]?.messages?.length) 
+          .map(id => fetchMessagesForContact(id));
+          
+        if (messageFetchPromises.length > 0) {
+            console.log(`[ChatPage] Fetching messages for ${messageFetchPromises.length} conversations on load.`);
+            await Promise.all(messageFetchPromises);
         }
+
       } catch (error) {
         console.error('Error fetching initial data:', error);
+        // Optionally set an error state here
       } finally {
         setIsLoading(false);
       }
     };
     
-    fetchInitialData();
-  }, [fetchContacts, fetchMessagesForContact, contactId]);
+    if (user) { // Ensure user is authenticated before fetching
+        fetchInitialData();
+    } else {
+        setIsLoading(false); // Not authenticated, stop loading
+    }
+    // Depend on fetchContacts, fetchMessagesForContact, and user. 
+    // contactId is implicitly handled by fetchMessagesForContact if needed.
+  }, [fetchContacts, fetchMessagesForContact, user]); 
   
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-50 dark:bg-dark-950 transition-colors duration-200">

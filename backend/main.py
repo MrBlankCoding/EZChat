@@ -98,8 +98,8 @@ if os.getenv("DEBUG", "False").lower() == "true":
 logger.info(f"Configured CORS with origins: {allowed_origins}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:[0-9]+)?",  # Allow any localhost port
+    allow_origins=allowed_origins,  # Use the dynamically built list
+    allow_origin_regex=r"https?://(localhost|127\\.0\\.0\\.1|192\\.168\\.0\\.\\d{1,3}|your_domain_name\\.com)(:[0-9]+)?",  # Updated regex
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
