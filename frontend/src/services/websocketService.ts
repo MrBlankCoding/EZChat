@@ -1,6 +1,13 @@
 import { useChatStore } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import presenceManager, { PresenceState } from './presenceManager';
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/api/notification";
+import { useContactsStore } from "../stores/contactsStore";
+import { Message } from "../stores/chatStore";
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 
@@ -46,6 +53,7 @@ class WebSocketService {
   private readReceiptQueue: Map<string, Set<string>> = new Map<string, Set<string>>();
   private readReceiptTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly READ_RECEIPT_DELAY = 2000;
+  private notificationAudio: HTMLAudioElement | null = null;
   
   async connect() {
     const now = Date.now();
@@ -286,6 +294,7 @@ class WebSocketService {
           try {
             await chatStore.fetchMessagesForContact(contactId);
           } catch (error) {
+            console.error(`[WS Service] Failed to load conversation for ${contactId}:`, error);
             // Failed to load conversation
           }
         }
@@ -309,9 +318,13 @@ class WebSocketService {
             if (!isDuplicate) {
               chatStore.addMessage(message);
               
+              // Notify user if the message is not from them
               if (user && user.id !== message.senderId) {
+                this._notifyUser(message);
                 this.queueReadReceipt(message.senderId, message.id);
               }
+            } else {
+              console.log(`[WS Service] Duplicate message ${message.id} received, skipping add.`);
             }
           }
           break;
@@ -431,6 +444,7 @@ class WebSocketService {
             chatStore.addMessage(replyMessage);
             
             if (user && user.id !== replyMessage.senderId) {
+              this._notifyUser(replyMessage);
               this.queueReadReceipt(replyMessage.senderId, replyMessage.id);
             }
           }
@@ -445,6 +459,7 @@ class WebSocketService {
       this.notifyEventHandlers();
     } catch (error) {
       this.notifyErrorHandlers(`Message handling error: ${error}`);
+      console.error("[WS Service] Error in handleMessage:", error);
     }
   }
   
@@ -1056,6 +1071,89 @@ class WebSocketService {
       });
     } catch (error) {
       console.error('Error processing WebSocket event before notifying handlers:', error);
+    }
+  }
+
+  private async _playNotificationSound() {
+    // TODO: Ensure the sound file exists at 'public/sounds/notification.mp3' or update the path.
+    const soundPath = '/sounds/notification.mp3'; 
+    if (!this.notificationAudio) {
+      this.notificationAudio = new Audio(soundPath);
+    }
+    try {
+      // Ensure the previous sound is stopped before playing again
+      this.notificationAudio.pause();
+      this.notificationAudio.currentTime = 0;
+      await this.notificationAudio.play();
+    } catch (error) {
+      console.error("Error playing notification sound:", error);
+      // Handle cases where playback might be blocked by browser policy
+      // For example, if user hasn't interacted with the page yet.
+    }
+  }
+
+  private async _notifyUser(message: Message) {
+    // Only notify if the window/tab is currently focused
+    if (document.hasFocus()) {
+      console.log("[WS Service] Window focused, attempting notification.");
+
+      // 1. Play Sound
+      this._playNotificationSound(); // Call the sound playing method
+
+      // 2. Show Visual Notification
+      const { contacts } = useContactsStore.getState();
+      const sender = contacts.find(c => c.contact_id === message.senderId);
+      const senderName = sender?.contact_display_name || "Unknown Sender";
+      const notificationBody = message.text || "Sent an attachment"; // Handle empty text messages
+
+      // Check if running in Tauri environment
+      if ((window as any).__TAURI__) {
+        console.log("[WS Service] Tauri environment detected.");
+        let permissionGranted = await isPermissionGranted();
+        if (!permissionGranted) {
+          const permissionResult = await requestPermission();
+          permissionGranted = permissionResult === "granted";
+        }
+
+        if (permissionGranted) {
+          console.log("[WS Service] Tauri notification permission granted. Sending notification.");
+          sendNotification({
+            title: `New message from ${senderName}`,
+            body: notificationBody,
+          });
+        } else {
+          console.log("[WS Service] Tauri notification permission denied.");
+        }
+      } else {
+        // Standard Web Notifications API
+        console.log("[WS Service] Web environment detected.");
+        if (!("Notification" in window)) {
+          console.log("This browser does not support desktop notification");
+        } else if (Notification.permission === "granted") {
+          console.log("[WS Service] Web notification permission granted. Sending notification.");
+          new Notification(`New message from ${senderName}`, {
+            body: notificationBody,
+            // icon: '/path/to/icon.png' // Optional: Add an icon
+          });
+        } else if (Notification.permission !== "denied") {
+          console.log("[WS Service] Requesting web notification permission.");
+          Notification.requestPermission().then((permission) => {
+            if (permission === "granted") {
+              console.log("[WS Service] Web notification permission granted after request. Sending notification.");
+              new Notification(`New message from ${senderName}`, {
+                body: notificationBody,
+                // icon: '/path/to/icon.png' // Optional: Add an icon
+              });
+            } else {
+              console.log("[WS Service] Web notification permission denied after request.");
+            }
+          });
+        } else {
+           console.log("[WS Service] Web notification permission denied.");
+        }
+      }
+    } else {
+       console.log("[WS Service] Window not focused, skipping notification.");
     }
   }
 }
