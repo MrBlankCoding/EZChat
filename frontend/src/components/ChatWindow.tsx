@@ -223,25 +223,21 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
       
       // Check for reaction changes
       if (JSON.stringify(prevMsg.reactions) !== JSON.stringify(currentMsg.reactions)) {
-        console.log(`[ChatWindow] Detected reaction change for message ${msgId}`);
         showActivityNotification('react', currentMsg.senderId, msgId);
       }
       
       // Check for edits
       if (prevMsg.text !== currentMsg.text && currentMsg.isEdited) {
-        console.log(`[ChatWindow] Detected edit for message ${msgId}`);
         showActivityNotification('edit', currentMsg.senderId, msgId);
       }
       
       // Check for deletions
       if (!prevMsg.isDeleted && currentMsg.isDeleted) {
-        console.log(`[ChatWindow] Detected deletion for message ${msgId}`);
         showActivityNotification('delete', currentMsg.senderId, msgId);
       }
       
       // Check for read receipts
       if (prevMsg.status !== 'read' && currentMsg.status === 'read') {
-        console.log(`[ChatWindow] Detected read receipt for message ${msgId}`);
         showActivityNotification('read', contactId, msgId);
       }
     });
@@ -572,27 +568,29 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     </div>
   );
   
-  const renderMessages = () => (
-    <div className="space-y-1 pl-16 pr-4">
-      {messages.map((msg) => (
-        <div 
-          key={msg.id}
-          ref={(node) => messageRefCallback(node, msg.id)}
-          data-message-id={msg.id}
-          data-sender-id={msg.senderId}
-        >
-          <MessageBubble
-            message={msg}
-            isOwn={msg.senderId === user?.id}
-            contactId={contactId}
-          />
-        </div>
-      ))}
-      
-      {isContactTyping && <TypingIndicator />}
-      <div ref={messagesEndRef} />
-    </div>
-  );
+  const renderMessages = () => {
+    return (
+      <div className="space-y-1 pl-16 pr-4">
+        {messages.map((msg) => (
+          <div 
+            key={msg.id}
+            ref={(node) => messageRefCallback(node, msg.id)}
+            data-message-id={msg.id}
+            data-sender-id={msg.senderId}
+          >
+            <MessageBubble
+              message={msg}
+              isOwn={msg.senderId === user?.id}
+              contactId={contactId}
+            />
+          </div>
+        ))}
+        
+        {isContactTyping && <TypingIndicator />}
+        <div ref={messagesEndRef} />
+      </div>
+    );
+  };
   
   const isMessageInputDisabled = (!message.trim() && files.length === 0) || uploading;
   

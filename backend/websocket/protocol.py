@@ -93,9 +93,10 @@ class TypingMessage(WebSocketMessage):
     is_typing: bool
 
     def dict(self, *args, **kwargs):
+        # Get the base dictionary with aliases ('type', 'from', 'to')
         d = super().dict(*args, **kwargs)
-        # Move payload-related fields under payload
-        d["payload"] = {"isTyping": d.pop("is_typing")}
+        # Construct the payload using the instance attribute 'self.is_typing'
+        d["payload"] = {"isTyping": self.is_typing}
         return d
 
 

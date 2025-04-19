@@ -337,6 +337,8 @@ class ConnectionManager:
                 f"User {user_id} disconnected. Remaining connections: {len(self.active_connections)}"
             )
             await self.broadcast_presence(user_id, "offline")
+        else:
+            pass
 
     async def broadcast_presence(self, user_id: str, status: str):
         message = PresenceMessage(
@@ -387,7 +389,11 @@ class ConnectionManager:
             except Exception as e:
                 logger.error(f"Error sending message to {recipient_id}: {e}")
                 await self.disconnect(recipient_id)
-        return False
+        else:
+            logger.warning(
+                f"[ConnManager] send_personal_message: Recipient {recipient_id} not found in active_connections."
+            )
+            return False
 
     async def update_typing_status(
         self, from_user: str, to_user: str, is_typing: bool
@@ -1065,7 +1071,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                     await handle_delete_message(payload, from_user, to_user, websocket)
 
                 elif message_type == WebSocketMessageType.TYPING:
-                    is_typing = payload.get("is_typing", False)
+                    is_typing = payload.get("is_typing", payload.get("isTyping", False))
                     await connection_manager.update_typing_status(
                         from_user, to_user, is_typing
                     )
