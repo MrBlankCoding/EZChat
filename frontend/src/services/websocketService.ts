@@ -1075,7 +1075,7 @@ class WebSocketService {
   }
 
   private async _playNotificationSound() {
-    // TODO: Ensure the sound file exists at 'public/sounds/notification.mp3' or update the path.
+    // Using the correct public path for sounds
     const soundPath = '/sounds/notification.mp3'; 
     if (!this.notificationAudio) {
       this.notificationAudio = new Audio(soundPath);
@@ -1084,21 +1084,25 @@ class WebSocketService {
       // Ensure the previous sound is stopped before playing again
       this.notificationAudio.pause();
       this.notificationAudio.currentTime = 0;
-      await this.notificationAudio.play();
+      await this.notificationAudio.play().catch(error => {
+        console.error("Error playing notification sound:", error);
+        // This might be due to missing file or autoplay policy
+        if (error.name === "NotSupportedError" || error.name === "NotFoundError") {
+          console.error(`Sound file not found at ${soundPath}. Make sure it exists in the public directory.`);
+        }
+      });
     } catch (error) {
       console.error("Error playing notification sound:", error);
-      // Handle cases where playback might be blocked by browser policy
-      // For example, if user hasn't interacted with the page yet.
     }
   }
 
   private async _notifyUser(message: Message) {
-    // Only notify if the window/tab is currently focused
-    if (document.hasFocus()) {
-      console.log("[WS Service] Window focused, attempting notification.");
+    // Only notify if the window/tab is currently NOT focused
+    if (!document.hasFocus()) {
+      console.log("[WS Service] Window not focused, sending notification.");
 
       // 1. Play Sound
-      this._playNotificationSound(); // Call the sound playing method
+      this._playNotificationSound(); 
 
       // 2. Show Visual Notification
       const { contacts } = useContactsStore.getState();
@@ -1149,11 +1153,11 @@ class WebSocketService {
             }
           });
         } else {
-           console.log("[WS Service] Web notification permission denied.");
+          console.log("[WS Service] Web notification permission denied.");
         }
       }
     } else {
-       console.log("[WS Service] Window not focused, skipping notification.");
+      console.log("[WS Service] Window focused, skipping notification.");
     }
   }
 }
