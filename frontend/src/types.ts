@@ -24,13 +24,6 @@ export interface Message {
   editedAt?: string;
   isDeleted?: boolean;
   deletedAt?: string;
-  reactions?: MessageReaction[];
-}
-
-export interface MessageReaction {
-  emoji: string;
-  userId: string;
-  timestamp: string | number;
 }
 
 // User related types

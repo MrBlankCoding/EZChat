@@ -11,6 +11,8 @@ import {
   PhotoIcon,
   DocumentIcon,
   FilmIcon,
+  PencilIcon,
+  ArrowUturnLeftIcon,
 } from '@heroicons/react/24/outline';
 import websocketService from '../services/websocketService';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
@@ -21,20 +23,14 @@ import StatusIndicator from './StatusIndicator';
 import { generateAvatarUrl } from '../utils/avatarUtils';
 import { useWebSocketConnection } from '../hooks/useWebSocketConnection';
 import EmojiPicker, { EmojiClickData, Theme, EmojiStyle, Categories } from 'emoji-picker-react';
+import { Message } from '../types';
+import { toast } from 'react-hot-toast';
 
 interface ChatWindowProps {
   contactId: string;
 }
 
-type ActivityType = 'react' | 'reply' | 'edit' | 'delete' | 'read';
-
-interface ActivityNotification {
-  id: string;
-  type: ActivityType;
-  userId: string;
-  messageId?: string;
-  timestamp: number;
-}
+type ActionMode = 'edit' | 'reply' | 'none';
 
 const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const [message, setMessage] = useState('');
@@ -44,14 +40,41 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const [uploading, setUploading] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
-  const [activityNotifications, setActivityNotifications] = useState<ActivityNotification[]>([]);
-  const observedMessagesRef = useRef<Set<string>>(new Set());
+  const [actionMode, setActionMode] = useState<ActionMode>('none');
+  const [targetMessageId, setTargetMessageId] = useState<string | null>(null);
   
   // Force a refresh every time there's a websocket event
   const [wsEventCounter, setWsEventCounter] = useState(0);
   
   const { user } = useAuthStore();
-  const { conversations, typingIndicators } = useChatStore();
+  const { 
+    messages, 
+    typingIndicator, 
+    contactStatus 
+  } = useChatStore(state => {
+    const conversation = state.conversations[contactId];
+    return {
+      messages: conversation?.messages || [],
+      typingIndicator: state.typingIndicators[contactId] || false,
+      contactStatus: conversation?.contactStatus || 'offline' // Assuming status is stored here
+    };
+  }, (oldState, newState) => {
+    // Custom equality check: re-render if messages array ref, typing, status changes, OR message statuses change.
+    const oldStatuses = oldState.messages.map(m => m.status).join(',');
+    const newStatuses = newState.messages.map(m => m.status).join(',');
+    
+    return oldState.messages === newState.messages && 
+           oldState.typingIndicator === newState.typingIndicator &&
+           oldState.contactStatus === newState.contactStatus &&
+           oldStatuses === newStatuses; // Add check for message statuses
+  });
+  
+  // Select actions separately (they don't change)
+  const { editMessage, sendReply } = useChatStore(state => ({ 
+    editMessage: state.editMessage, 
+    sendReply: state.sendReply 
+  }));
+  
   const { contacts } = useContactsStore();
   const { connectionStatus } = useWebSocketConnection();
   
@@ -60,11 +83,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const messageObserverRef = useRef<IntersectionObserver | null>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  
+  const observedMessagesRef = useRef<Set<string>>(new Set());
   const emojiPickerRef = useRef<HTMLDivElement>(null);
-  
-  // Keep a reference to the previous conversation state to compare for changes
-  const previousMessagesRef = useRef<Record<string, any>>({});
   
   if (!contacts || contacts.length === 0) {
     return (
@@ -75,9 +95,26 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   }
   
   const contact = contacts.find(c => c.contact_id === contactId);
-  const conversation = conversations?.[contactId];
-  const messages = conversation?.messages || [];
-  const isContactTyping = typingIndicators?.[contactId] || false;
+  const isContactTyping = typingIndicator;
+  
+  // Find the *current* target message data based on ID
+  const currentTargetMessage = targetMessageId ? messages.find(m => m.id === targetMessageId) : null;
+
+  // Define cancelAction *before* the effect that uses it
+  const cancelAction = useCallback(() => {
+    setTargetMessageId(null);
+    setActionMode('none');
+    setMessage('');
+    setFiles([]);
+  }, []);
+
+  // Effect to auto-cancel action if target message disappears (e.g., deleted)
+  useEffect(() => {
+    if (targetMessageId && !currentTargetMessage) {
+      console.warn('Target message for action not found, cancelling action.');
+      cancelAction();
+    }
+  }, [targetMessageId, currentTargetMessage, cancelAction]); // Depend on currentTargetMessage derived from messages
   
   const messageRefCallback = useCallback((node: HTMLDivElement | null, messageId: string) => {
     if (node) {
@@ -136,7 +173,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && user && contactId) {
-        const conversation = conversations?.[contactId];
+        // Get latest state directly from store inside handler
+        const conversation = useChatStore.getState().conversations[contactId];
         if (!conversation?.messages?.length) return;
         
         const unreadMessages = conversation.messages.filter(
@@ -152,7 +190,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [contactId, user, conversations]);
+  }, [contactId, user]); // Removed conversations from dependency array
   
   useEffect(() => {
     inputRef.current?.focus();
@@ -180,133 +218,18 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     return () => document.removeEventListener('keydown', handleEscapeKey);
   }, [showEmojiPicker]);
   
-  // Define the showActivityNotification function before using it in useEffect
-  const showActivityNotification = useCallback((type: ActivityType, userId: string, messageId?: string) => {
-    if (userId === user?.id) return;
-    
-    const id = `${type}-${userId}-${messageId || ''}-${Date.now()}`;
-    
-    setActivityNotifications(prev => [
-      ...prev,
-      { id, type, userId, messageId, timestamp: Date.now() }
-    ]);
-    
-    setTimeout(() => {
-      setActivityNotifications(prev => prev.filter(n => n.id !== id));
-    }, 3000);
-  }, [user?.id]);
-  
-  // Effect to watch for changes in messages, particularly edits, deletes, and reactions
-  useEffect(() => {
-    if (!contactId || !user) return;
-    
-    const currentMessages = conversations[contactId]?.messages || [];
-    const currentMessagesById = Object.fromEntries(
-      currentMessages.map(msg => [msg.id, msg])
-    );
-    
-    // Initialize the previous messages reference if it doesn't exist for this contact
-    if (!previousMessagesRef.current[contactId]) {
-      previousMessagesRef.current[contactId] = { ...currentMessagesById };
-      return; // First load, nothing to compare
-    }
-    
-    const prevMessagesById = previousMessagesRef.current[contactId] || {};
-    
-    // Check for changes in existing messages
-    Object.keys(currentMessagesById).forEach(msgId => {
-      const currentMsg = currentMessagesById[msgId];
-      const prevMsg = prevMessagesById[msgId];
-      
-      // Skip if message is new (not in previous state)
-      if (!prevMsg) return;
-      
-      // Check for reaction changes
-      if (JSON.stringify(prevMsg.reactions) !== JSON.stringify(currentMsg.reactions)) {
-        showActivityNotification('react', currentMsg.senderId, msgId);
-      }
-      
-      // Check for edits
-      if (prevMsg.text !== currentMsg.text && currentMsg.isEdited) {
-        showActivityNotification('edit', currentMsg.senderId, msgId);
-      }
-      
-      // Check for deletions
-      if (!prevMsg.isDeleted && currentMsg.isDeleted) {
-        showActivityNotification('delete', currentMsg.senderId, msgId);
-      }
-      
-      // Check for read receipts
-      if (prevMsg.status !== 'read' && currentMsg.status === 'read') {
-        showActivityNotification('read', contactId, msgId);
-      }
-    });
-    
-    // Update the previous messages reference
-    previousMessagesRef.current[contactId] = { ...currentMessagesById };
-  }, [contactId, user, conversations, showActivityNotification]);
-  
-  // Subscribe directly to WebSocket message events for notifications
-  useEffect(() => {
-    if (!contactId || !user) return;
-    
-    const handleWebSocketMessage = (event: any) => {
-      if (!event || !event.type) return;
-      
-      switch (event.type) {
-        case 'reaction':
-          if (event.payload?.user_id && event.payload?.message_id) {
-            showActivityNotification('react', event.payload.user_id, event.payload.message_id);
-          }
-          break;
-          
-        case 'edit':
-          if (event.payload?.user_id && event.payload?.message_id) {
-            showActivityNotification('edit', event.payload.user_id, event.payload.message_id);
-          }
-          break;
-          
-        case 'delete':
-          if (event.payload?.user_id && event.payload?.message_id) {
-            showActivityNotification('delete', event.payload.user_id, event.payload.message_id);
-          }
-          break;
-          
-        case 'read_receipt':
-        case 'read_receipt_batch':
-          if (event.from && event.from !== user.id) {
-            showActivityNotification('read', event.from);
-          }
-          break;
-      }
-    };
-    
-    // Subscribe to WebSocket message events
-    websocketService.onEvent(handleWebSocketMessage);
-    
-    return () => {
-      websocketService.offEvent(handleWebSocketMessage);
-    };
-  }, [contactId, user, showActivityNotification]);
-  
-  // Subscribe to WebSocket events to force UI updates
+  // Subscribe to WebSocket events to handle UI updates
   useEffect(() => {
     if (!contactId) return;
     
-    console.log('[ChatWindow] Setting up WebSocket event subscription for', contactId);
-    
     const handleWebSocketEvent = () => {
-      console.log('[ChatWindow] WebSocket event received');
-      
       // Keep the logic to fetch messages if none are loaded, triggered by an event
       const currentConversation = useChatStore.getState().conversations[contactId];
       if (!currentConversation || currentConversation.messages?.length === 0) {
-        console.log('[ChatWindow] No messages loaded or conversation empty, fetching messages...');
         useChatStore.getState().fetchMessagesForContact(contactId);
       }
       
-      // Check for any missed read receipts - This might be better placed elsewhere
-      // or triggered more specifically, but let's keep it for now while removing the main issue.
+      // Check for any missed read receipts
       const conversation = useChatStore.getState().conversations[contactId]; // Get latest state
       if (conversation?.messages?.length > 0) {
         const unreadMessages = conversation.messages.filter(
@@ -325,7 +248,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     const unsubscribe = websocketService.subscribeToEvents(handleWebSocketEvent);
     
     return () => {
-      console.log('[ChatWindow] Cleaning up WebSocket event subscription');
       websocketService.sendPendingReadReceipts(); // Send any pending read receipts before unmounting
       if (unsubscribe) unsubscribe();
     };
@@ -406,25 +328,45 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if ((!message.trim() && files.length === 0) || !user || uploading) return;
-    
-    try {
-      const attachments = await uploadFiles();
-      websocketService.sendMessage(contactId, message, attachments);
-      
-      setMessage('');
-      setFiles([]);
-      
-      if (typingTimeout) {
-        clearTimeout(typingTimeout);
-      }
+    if ((message.trim() === '' && files.length === 0) || !user || !contactId || uploading) return;
+
+    // Stop typing indicator immediately
+    if (isTyping) {
+      clearTimeout(typingTimeout!);
       setIsTyping(false);
       websocketService.sendTypingIndicator(contactId, false);
-      
-      inputRef.current?.focus();
+      setTypingTimeout(null);
+    }
+
+    try {
+      let uploadedFiles: any[] = [];
+      if (files.length > 0) {
+        uploadedFiles = await uploadFiles();
+      }
+
+      if (actionMode === 'edit' && targetMessageId) {
+        // Edit message logic
+        await editMessage(targetMessageId, contactId, message.trim());
+        toast.success('Message updated');
+      } else if (actionMode === 'reply' && targetMessageId) {
+        // Reply message logic
+        await sendReply(contactId, message.trim(), targetMessageId, uploadedFiles);
+        toast.success('Reply sent');
+      } else {
+        // Send new message logic
+        websocketService.sendMessage(contactId, message.trim(), uploadedFiles);
+      }
+
+      // Reset state after sending/editing/replying
+      setTargetMessageId(null);
+      setActionMode('none');
+      setMessage('');
+      setFiles([]);
+
     } catch (error) {
-      console.error('Error sending message:', error);
+      console.error('Error sending/editing/replying message:', error);
+      toast.error('Failed to process message.');
+      setUploading(false); // Ensure uploading state is reset on error
     }
   };
   
@@ -445,50 +387,25 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     setShowAttachMenu(false);
   };
   
-  const renderActivityNotifications = () => {
-    if (activityNotifications.length === 0) return null;
-    
-    const recentNotifications = [...activityNotifications]
-      .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, 2);
-    
-    return (
-      <div className="absolute top-0 left-0 right-0 z-10">
-        {recentNotifications.map(notification => {
-          const contact = contacts.find(c => c.contact_id === notification.userId);
-          const name = contact?.contact_display_name || 'Someone';
-          
-          let message = '';
-          switch (notification.type) {
-            case 'react':
-              message = `${name} reacted to a message`;
-              break;
-            case 'reply':
-              message = `${name} replied to a message`;
-              break;
-            case 'edit':
-              message = `${name} edited a message`;
-              break;
-            case 'delete':
-              message = `${name} deleted a message`;
-              break;
-            case 'read':
-              message = `${name} read your messages`;
-              break;
-          }
-          
-          return (
-            <div 
-              key={notification.id}
-              className="bg-primary-50 dark:bg-primary-900/20 border-l-4 border-primary-500 dark:border-primary-400 px-4 py-2 m-2 rounded shadow-md animate-fadeIn"
-            >
-              <p className="text-sm text-primary-700 dark:text-primary-300">{message}</p>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
+  // Add handlers for starting edit/reply
+  const handleStartEdit = useCallback((msg: Message) => {
+    setTargetMessageId(msg.id);
+    setActionMode('edit');
+    setMessage(msg.text);
+    inputRef.current?.focus();
+  }, []);
+
+  const handleStartReply = useCallback((msg: Message) => {
+    setTargetMessageId(msg.id);
+    setActionMode('reply');
+    setMessage('');
+    inputRef.current?.focus();
+  }, []);
+
+  // Reset action mode when contact changes
+  useEffect(() => {
+    cancelAction();
+  }, [contactId, cancelAction]);
   
   if (!contact) {
     return (
@@ -570,21 +487,36 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   
   const renderMessages = () => {
     return (
-      <div className="space-y-1 pl-16 pr-4">
-        {messages.map((msg) => (
-          <div 
-            key={msg.id}
-            ref={(node) => messageRefCallback(node, msg.id)}
-            data-message-id={msg.id}
-            data-sender-id={msg.senderId}
-          >
-            <MessageBubble
-              message={msg}
-              isOwn={msg.senderId === user?.id}
-              contactId={contactId}
-            />
-          </div>
-        ))}
+      <div className="space-y-2 px-4">
+        {messages.map((msg: Message) => {
+          const isOwn = msg.senderId === user?.id;
+          const msgContact = !isOwn ? contacts.find(c => c.contact_id === msg.senderId) : null;
+          
+          return (
+            <div 
+              key={msg.id}
+              ref={(node) => messageRefCallback(node, msg.id)}
+              data-message-id={msg.id}
+              data-sender-id={msg.senderId}
+              className={`flex items-end ${isOwn ? 'justify-end' : 'justify-start'} gap-2`}
+            >
+              {!isOwn && (
+                <img
+                  src={msgContact?.contact_avatar_url || generateAvatarUrl(msgContact?.contact_display_name || '', 32)}
+                  alt={msgContact?.contact_display_name || 'User'}
+                  className="h-8 w-8 rounded-full object-cover shadow-sm mb-1 flex-shrink-0"
+                />
+              )}
+              <MessageBubble
+                message={msg}
+                isOwn={isOwn}
+                contactId={contactId}
+                onStartEdit={handleStartEdit}
+                onStartReply={handleStartReply}
+              />
+            </div>
+          );
+        })}
         
         {isContactTyping && <TypingIndicator />}
         <div ref={messagesEndRef} />
@@ -602,42 +534,15 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   
   // Define emoji picker categories with correct type
   const emojiCategories = [
-    {
-      name: "Recently Used",
-      category: Categories.SUGGESTED
-    },
-    {
-      name: "Smileys & People",
-      category: Categories.SMILEYS_PEOPLE
-    },
-    {
-      name: "Animals & Nature",
-      category: Categories.ANIMALS_NATURE
-    },
-    {
-      name: "Food & Drink",
-      category: Categories.FOOD_DRINK
-    },
-    {
-      name: "Travel & Places",
-      category: Categories.TRAVEL_PLACES
-    },
-    {
-      name: "Activities",
-      category: Categories.ACTIVITIES
-    },
-    {
-      name: "Objects",
-      category: Categories.OBJECTS
-    },
-    {
-      name: "Symbols",
-      category: Categories.SYMBOLS
-    },
-    {
-      name: "Flags",
-      category: Categories.FLAGS
-    }
+    { name: "Recently Used", category: Categories.SUGGESTED },
+    { name: "Smileys & People", category: Categories.SMILEYS_PEOPLE },
+    { name: "Animals & Nature", category: Categories.ANIMALS_NATURE },
+    { name: "Food & Drink", category: Categories.FOOD_DRINK },
+    { name: "Travel & Places", category: Categories.TRAVEL_PLACES },
+    { name: "Activities", category: Categories.ACTIVITIES },
+    { name: "Objects", category: Categories.OBJECTS },
+    { name: "Symbols", category: Categories.SYMBOLS },
+    { name: "Flags", category: Categories.FLAGS }
   ];
   
   return (
@@ -652,7 +557,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
             />
             <div className="absolute bottom-0 right-0">
               <StatusIndicator 
-                status={conversation?.contactStatus || contact?.contact_status || 'offline'} 
+                status={contactStatus || contact?.contact_status || 'offline'} 
                 size="sm"
               />
             </div>
@@ -664,7 +569,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
               </h2>
               <div className="flex items-center">
                 <StatusIndicator 
-                  status={conversation?.contactStatus || contact?.contact_status || 'offline'} 
+                  status={contactStatus || contact?.contact_status || 'offline'} 
                   size="sm" 
                   showLabel={true} 
                 />
@@ -681,20 +586,57 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
       </div>
       
       <div className="flex-1 overflow-y-auto p-4 relative bg-gray-50 dark:bg-dark-900">
-        {renderActivityNotifications()}
         <div className="space-y-4 pb-2">
           {messages.length === 0 ? renderEmptyChat() : renderMessages()}
         </div>
       </div>
       
-      <div className="bg-white dark:bg-dark-800 border-t border-gray-200 dark:border-dark-700 p-3">
+      {/* Input Area Container */}
+      <div className="bg-white dark:bg-dark-800 border-t border-gray-200 dark:border-dark-700">
+
+        {/* Action Context Area */}
+        {actionMode !== 'none' && currentTargetMessage && (
+          <div className="px-3 py-2 border-b border-gray-200 dark:border-dark-700 bg-gray-50 dark:bg-dark-800 text-xs flex items-center justify-between transition-all duration-150 ease-in-out animate-fade-in-fast">
+            <div className="flex items-center min-w-0">
+              {/* Icon indicating action type */}
+              {actionMode === 'edit' ? (
+                <PencilIcon className="h-4 w-4 text-blue-500 dark:text-blue-400 mr-2 flex-shrink-0" />
+              ) : (
+                <ArrowUturnLeftIcon className="h-4 w-4 text-green-500 dark:text-green-400 mr-2 flex-shrink-0" />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-gray-700 dark:text-gray-300 mb-0.5">
+                  {actionMode === 'edit' ? 'Editing Message' : `Replying to ${currentTargetMessage.senderId === user?.id ? 'yourself' : contacts.find(c => c.contact_id === currentTargetMessage.senderId)?.contact_display_name || 'Unknown'}`}
+                </div>
+                <p className="truncate italic text-gray-500 dark:text-gray-400">
+                  {currentTargetMessage.isDeleted ? 'Original message was deleted' :
+                    currentTargetMessage.text ? currentTargetMessage.text :
+                      (currentTargetMessage.attachments && currentTargetMessage.attachments.length > 0 ?
+                        `${currentTargetMessage.attachments.length} attachment${currentTargetMessage.attachments.length > 1 ? 's' : ''}`
+                        : 'Empty message')
+                  }
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={cancelAction}
+              className="ml-3 p-1 rounded-full text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-dark-700 focus:outline-none focus:ring-1 focus:ring-offset-1 focus:ring-offset-gray-50 dark:focus:ring-offset-dark-850 focus:ring-primary-500 dark:focus:ring-secondary-400"
+              aria-label="Cancel action"
+            >
+              <XMarkIcon className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        {/* File Previews */}
         {files.length > 0 && (
-          <div className="mb-3 flex flex-wrap gap-2 bg-gray-50 dark:bg-dark-700 p-2 rounded-xl max-h-32 overflow-y-auto">
+          <div className="px-3 pt-2 flex flex-wrap gap-2 bg-gray-50 dark:bg-dark-700 max-h-28 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-dark-600">
             {files.map((file, index) => renderFilePreview(file, index))}
           </div>
         )}
-        
-        <form onSubmit={handleSendMessage} className="flex items-end">
+
+        {/* Input Form */}
+        <form onSubmit={handleSendMessage} className="flex items-end p-3">
           <div className="relative flex-1">
             {showAttachMenu && renderAttachmentMenu()}
             

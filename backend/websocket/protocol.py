@@ -19,7 +19,6 @@ class WebSocketMessageType(str, Enum):
     DELIVERY_RECEIPT = "delivery_receipt"
     PRESENCE = "presence"
     ERROR = "error"
-    REACTION = "reaction"
     REPLY = "reply"
     EDIT = "edit"
     DELETE = "delete"
@@ -156,30 +155,6 @@ class PresenceMessage(WebSocketMessage):
         # Move payload-related fields under payload
         d["payload"] = {"status": d.pop("status"), "lastSeen": d.pop("last_seen")}
         return d
-
-
-class ReactionMessage(WebSocketMessage):
-    """
-    Message reaction.
-    """
-
-    type: WebSocketMessageType = WebSocketMessageType.REACTION
-    message_id: str
-    reaction: str
-    action: str  # "add" or "remove"
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
-
-    def dict(self, *args, **kwargs):
-        d = super().dict(*args, **kwargs)
-        # Move payload-related fields under payload
-        d["payload"] = {
-            "messageId": d.pop("message_id"),
-            "reaction": d.pop("reaction"),
-            "action": d.pop("action"),
-            "timestamp": d.pop("timestamp"),
-        }
-        return d
-
 
 class ReplyMessage(TextMessage):
     """

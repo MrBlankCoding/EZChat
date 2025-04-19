@@ -6,12 +6,6 @@ import { useAuthStore } from './authStore';
 import { useContactsStore } from './contactsStore';
 import { PresenceState } from '../services/presenceManager';
 
-export interface Reaction {
-  userId: string;
-  reaction: string;
-  timestamp: string;
-}
-
 export interface Message {
   id: string;
   senderId: string;
@@ -20,7 +14,6 @@ export interface Message {
   timestamp: number | string;
   status: 'sent' | 'delivered' | 'read';
   attachments?: any[];
-  reactions?: Reaction[];
   replyTo?: string;
   isEdited?: boolean;
   editedAt?: string;
@@ -59,9 +52,6 @@ interface ChatState {
   markConversationAsUnread: (contactId: string, isUnread: boolean) => Promise<void>;
   deleteConversation: (contactId: string) => Promise<void>;
   
-  addReaction: (messageId: string, contactId: string, reaction: string) => Promise<boolean>;
-  removeReaction: (messageId: string, contactId: string, reaction: string) => Promise<boolean>;
-  updateMessageReaction: (messageId: string, senderId: string, contactId: string, reaction: string, action: 'add' | 'remove') => void;
   editMessage: (messageId: string, contactId: string, text: string) => Promise<boolean>;
   updateEditedMessage: (messageId: string, contactId: string, text: string, editedAt: string) => void;
   deleteMessage: (messageId: string, contactId: string) => Promise<boolean>;
@@ -126,11 +116,6 @@ const useChatStore = create<ChatState>()(
             timestamp: message.timestamp || message.created_at,
             status: message.status || 'sent',
             attachments: message.attachments || [],
-            reactions: message.reactions?.map((r: any) => ({
-              userId: r.user_id,
-              reaction: r.reaction,
-              timestamp: r.created_at || new Date().toISOString()
-            })) || [],
             replyTo: message.reply_to,
             isEdited: message.is_edited || false,
             editedAt: message.edited_at,
@@ -404,145 +389,6 @@ const useChatStore = create<ChatState>()(
             isLoading: false
           });
         }
-      },
-      
-      addReaction: async (messageId: string, contactId: string, reaction: string) => {
-        const { user } = useAuthStore.getState();
-        if (!user) return false;
-        
-        try {
-          websocketService.sendReaction(contactId, messageId, reaction, 'add');
-          
-          const { conversations } = get();
-          const conversation = conversations[contactId];
-          
-          if (!conversation) return false;
-          
-          const updatedMessages = conversation.messages.map(message => {
-            if (message.id === messageId) {
-              const reactions = message.reactions || [];
-              const existingReaction = reactions.find(r => r.userId === user.id && r.reaction === reaction);
-              
-              if (!existingReaction) {
-                return {
-                  ...message,
-                  reactions: [
-                    ...reactions,
-                    {
-                      userId: user.id,
-                      reaction,
-                      timestamp: new Date().toISOString()
-                    }
-                  ]
-                };
-              }
-            }
-            return message;
-          });
-          
-          set({
-            conversations: {
-              ...conversations,
-              [contactId]: {
-                ...conversation,
-                messages: updatedMessages
-              }
-            }
-          });
-          
-          return true;
-        } catch (error) {
-          console.error('Error adding reaction:', error);
-          return false;
-        }
-      },
-      
-      removeReaction: async (messageId: string, contactId: string, reaction: string) => {
-        const { user } = useAuthStore.getState();
-        if (!user) return false;
-        
-        try {
-          websocketService.sendReaction(contactId, messageId, reaction, 'remove');
-          
-          const { conversations } = get();
-          const conversation = conversations[contactId];
-          
-          if (!conversation) return false;
-          
-          const updatedMessages = conversation.messages.map(message => {
-            if (message.id === messageId && message.reactions) {
-              return {
-                ...message,
-                reactions: message.reactions.filter(r => !(r.userId === user.id && r.reaction === reaction))
-              };
-            }
-            return message;
-          });
-          
-          set({
-            conversations: {
-              ...conversations,
-              [contactId]: {
-                ...conversation,
-                messages: updatedMessages
-              }
-            }
-          });
-          
-          return true;
-        } catch (error) {
-          console.error('Error removing reaction:', error);
-          return false;
-        }
-      },
-      
-      updateMessageReaction: (messageId: string, senderId: string, contactId: string, reaction: string, action: 'add' | 'remove') => {
-        const msgId = String(messageId);
-        const { conversations } = get();
-        const conversation = conversations[contactId];
-        
-        if (!conversation) return;
-        
-        const updatedMessages = conversation.messages.map(message => {
-          if (message.id === msgId) {
-            const reactions = message.reactions || [];
-            
-            if (action === 'add') {
-              const existingReaction = reactions.find(r => r.userId === senderId && r.reaction === reaction);
-              
-              if (!existingReaction) {
-                return {
-                  ...message,
-                  reactions: [
-                    ...reactions,
-                    {
-                      userId: senderId,
-                      reaction,
-                      timestamp: new Date().toISOString()
-                    }
-                  ]
-                };
-              }
-            } else if (action === 'remove') {
-              return {
-                ...message,
-                reactions: reactions.filter(r => !(r.userId === senderId && r.reaction === reaction))
-              };
-            }
-          }
-          return message;
-        });
-        
-        set({
-          conversations: {
-            ...conversations,
-            [contactId]: {
-              ...conversation,
-              messages: updatedMessages,
-              _lastUpdated: Date.now()
-            }
-          }
-        });
       },
       
       editMessage: async (messageId: string, contactId: string, text: string) => {

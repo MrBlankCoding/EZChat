@@ -26,7 +26,6 @@ from .protocol import (
     DeliveryReceiptMessage,
     PresenceMessage,
     ErrorMessage,
-    ReactionMessage,
     ReplyMessage,
     EditMessage,
     DeleteMessage,
@@ -288,30 +287,90 @@ class ConnectionManager:
                         pending_receipts[user_id] = receipts.copy()
                         read_receipt_buffer[user_id] = []
 
+                # Process receipts grouped by the user who sent them (user_id)
                 for user_id, receipts in pending_receipts.items():
-                    if receipts:
-                        try:
-                            by_recipient = {}
-                            for receipt in receipts:
-                                recipient = receipt.get("to_user")
-                                if recipient not in by_recipient:
-                                    by_recipient[recipient] = []
-                                by_recipient[recipient].append(receipt)
+                    if not receipts:
+                        continue
 
-                            for recipient, batch in by_recipient.items():
-                                message_ids = [r.get("message_id") for r in batch]
-                                batch_receipt = ReadReceiptBatchMessage(
-                                    from_user=user_id,
-                                    to_user=recipient,
-                                    message_ids=message_ids,
-                                    contact_id=batch[0].get("contact_id"),
-                                    timestamp=datetime.utcnow().isoformat(),
+                    try:
+                        # Group the receipts by the original sender of the messages (recipient)
+                        by_recipient = {}
+                        for receipt in receipts:
+                            recipient = receipt.get("to_user")
+                            if recipient not in by_recipient:
+                                by_recipient[recipient] = []
+                            by_recipient[recipient].append(receipt)
+
+                        # Send batch notification to each original sender (recipient)
+                        # Also broadcast to all connections of the user who sent the read receipt (user_id)
+                        broadcast_targets = set()
+                        # Extract base user ID (without device identifier) for broadcasting
+                        user_base_id = user_id.split(":")[0]
+                        for conn_id in self.active_connections:
+                            if conn_id.startswith(user_base_id):
+                                broadcast_targets.add(conn_id)
+
+                        coroutines = []
+                        for recipient, batch in by_recipient.items():
+                            if not batch:
+                                continue
+
+                            message_ids = [
+                                r.get("message_id")
+                                for r in batch
+                                if r.get("message_id")
+                            ]
+                            if not message_ids:
+                                continue
+
+                            batch_receipt = ReadReceiptBatchMessage(
+                                from_user=user_id,  # User who read the messages
+                                to_user=recipient,  # User who originally sent the messages
+                                message_ids=message_ids,
+                                contact_id=batch[0].get("contact_id"),
+                                timestamp=datetime.utcnow().isoformat(),
+                            )
+
+                            # Send to the original message sender
+                            if recipient in self.active_connections:
+                                coroutines.append(
+                                    self.send_personal_message(batch_receipt, recipient)
                                 )
-                                await self.send_personal_message(
-                                    batch_receipt, recipient
-                                )
-                        except Exception as e:
-                            logger.error(f"Error processing read receipt batch: {e}")
+
+                            # Send to all connections of the user who marked messages as read
+                            for target_conn_id in broadcast_targets:
+                                # Avoid sending to self if it's the same connection that triggered (though unlikely in batch)
+                                # Also avoid sending back to the original sender if they are the same as the reader
+                                if target_conn_id != recipient:
+                                    # Clone message but adjust 'to_user' for the context of the reader's client
+                                    # The reader's client needs to know *who* the message was originally for
+                                    reader_context_receipt = ReadReceiptBatchMessage(
+                                        from_user=user_id,
+                                        to_user=target_conn_id,  # Target this specific connection
+                                        message_ids=message_ids,
+                                        contact_id=recipient,  # For the reader, contact_id is the original sender
+                                        timestamp=batch_receipt.timestamp,
+                                    )
+                                    coroutines.append(
+                                        self.send_personal_message(
+                                            reader_context_receipt, target_conn_id
+                                        )
+                                    )
+
+                        if coroutines:
+                            results = await asyncio.gather(
+                                *coroutines, return_exceptions=True
+                            )
+                            for i, result in enumerate(results):
+                                if isinstance(result, Exception):
+                                    logger.error(
+                                        f"Error sending batch receipt notification ({i}): {result}"
+                                    )
+
+                    except Exception as e:
+                        logger.error(
+                            f"Error processing read receipt batch for user {user_id}: {e}"
+                        )
 
                 await asyncio.sleep(0.1)
             except Exception as e:
@@ -677,64 +736,6 @@ async def handle_reply_message(
     await broadcast_to_related_connections(reply_obj, from_user, to_user, from_user)
 
 
-async def handle_reaction_message(
-    payload: Dict, from_user: str, to_user: str, websocket: WebSocket
-):
-    reaction_obj = ReactionMessage(
-        from_user=from_user,
-        to_user=to_user,
-        message_id=payload.get("messageId"),
-        reaction=payload.get("reaction"),
-        action=payload.get("action"),
-    )
-
-    try:
-        messages_collection = get_messages_collection()
-        message_id = payload.get("messageId")
-
-        original_message = await messages_collection.find_one({"_id": message_id})
-        if not original_message:
-            error = ErrorMessage(code=404, message="Message not found")
-            await websocket.send_text(error.json())
-            return
-
-        if payload.get("action") == "add":
-            await messages_collection.update_one(
-                {"_id": message_id},
-                {
-                    "$addToSet": {
-                        "reactions": {
-                            "user_id": from_user,
-                            "reaction": payload.get("reaction"),
-                            "created_at": datetime.utcnow(),
-                        }
-                    }
-                },
-            )
-        else:
-            await messages_collection.update_one(
-                {"_id": message_id},
-                {
-                    "$pull": {
-                        "reactions": {
-                            "user_id": from_user,
-                            "reaction": payload.get("reaction"),
-                        }
-                    }
-                },
-            )
-
-        if to_user != from_user:
-            await broadcast_to_related_connections(
-                reaction_obj, from_user, to_user, from_user
-            )
-
-    except Exception as e:
-        logger.error(f"Error handling reaction: {e}")
-        error = ErrorMessage(code=500, message="Failed to process reaction")
-        await websocket.send_text(error.json())
-
-
 async def handle_edit_message(
     payload: Dict, from_user: str, to_user: str, websocket: WebSocket
 ):
@@ -958,14 +959,17 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
     Process a batch of read receipts efficiently
     """
     message_ids = payload.get("messageIds", [])
-    contact_id = payload.get("contactId")
+    contact_id = payload.get(
+        "contactId"
+    )  # This is the original sender (recipient of messages)
 
-    if not message_ids:
+    if not message_ids or not contact_id:
+        logger.warning("Missing messageIds or contactId in read_receipt_batch")
         return
 
     if DEBUG:
         logger.info(
-            f"Processing batch of {len(message_ids)} read receipts from {from_user}"
+            f"Processing batch of {len(message_ids)} read receipts from {from_user} for contact {contact_id}"
         )
 
     # Process in chunks to avoid overwhelming the database
@@ -981,17 +985,20 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
             async with db_semaphore:
                 messages_collection = get_messages_collection()
                 existing_messages = await messages_collection.find(
-                    {"_id": {"$in": chunk}}
+                    {
+                        "_id": {"$in": chunk},
+                        "recipient_id": from_user,
+                    }  # Ensure these messages were sent TO the reader
                 ).to_list(length=None)
 
-                # Extract IDs of messages that actually exist
+                # Extract IDs of messages that actually exist AND were sent to the reader
                 existing_ids = [msg["_id"] for msg in existing_messages]
 
                 # Log any missing messages at debug level only
                 missing_ids = [msg_id for msg_id in chunk if msg_id not in existing_ids]
                 if missing_ids and DEBUG:
                     logger.info(
-                        f"Read receipt for non-existent messages: {missing_ids}"
+                        f"Read receipt batch contained non-existent or incorrect recipient messages: {missing_ids}"
                     )
 
                 # Only update messages that exist
@@ -1013,48 +1020,58 @@ async def handle_read_receipt_batch(payload: Dict, from_user: str, to_user: str)
 
     if DEBUG and total_updated > 0:
         logger.info(
-            f"Updated {total_updated} of {len(message_ids)} messages to read status"
+            f"Updated {total_updated} of {len(message_ids)} messages to read status for {from_user}"
         )
 
     # Only continue with notification if we have valid messages
     if not valid_messages:
+        logger.info(f"No valid messages found in read receipt batch from {from_user}")
         return
 
-    # Create a batch notification for the original sender but only for valid messages
-    batch_receipt = ReadReceiptBatchMessage(
-        from_user=from_user,
-        to_user=to_user,
-        message_ids=valid_messages,  # Only include valid message IDs
-        contact_id=contact_id,
-        timestamp=datetime.utcnow().isoformat(),
-    )
+    # --- Notification Logic ---
+    coroutines = []
+    current_timestamp = datetime.utcnow().isoformat()
 
-    # Send to the original sender
-    await connection_manager.send_personal_message(batch_receipt, to_user)
+    # 1. Notify the original sender (contact_id) about the read status
+    if contact_id in connection_manager.active_connections:
+        sender_notification = ReadReceiptBatchMessage(
+            from_user=from_user,  # Who read the message
+            to_user=contact_id,  # Who gets the notification (original sender)
+            message_ids=valid_messages,
+            contact_id=from_user,  # For sender's client, contact_id is the reader
+            timestamp=current_timestamp,
+        )
+        coroutines.append(
+            connection_manager.send_personal_message(sender_notification, contact_id)
+        )
 
-    # Find client IDs that need to be notified
-    notification_targets = set()
-
-    # Only add clients that share the conversation
-    sender_base_id = from_user.split(":")[0]
-    recipient_base_id = to_user.split(":")[0]
-
-    for uid in connection_manager.active_connections:
-        # Skip the current user and original sender
-        if uid == from_user or uid == to_user:
+    # 2. Notify the reader's other connected devices
+    reader_base_id = from_user.split(":")[0]
+    for conn_id in connection_manager.active_connections:
+        # Skip the connection that sent this batch and the original sender
+        if conn_id == from_user or conn_id == contact_id:
             continue
+        # Send only to other connections of the reader
+        if conn_id.startswith(reader_base_id):
+            reader_notification = ReadReceiptBatchMessage(
+                from_user=from_user,  # Who read the message
+                to_user=conn_id,  # Target this specific connection
+                message_ids=valid_messages,
+                contact_id=contact_id,  # For reader's client, contact_id is the original sender
+                timestamp=current_timestamp,
+            )
+            coroutines.append(
+                connection_manager.send_personal_message(reader_notification, conn_id)
+            )
 
-        # Add all related devices (more efficient than checking one by one)
-        if uid.startswith(sender_base_id) or uid.startswith(recipient_base_id):
-            notification_targets.add(uid)
-
-    # Send notifications concurrently
-    if notification_targets:
-        coroutines = [
-            connection_manager.send_personal_message(batch_receipt, uid)
-            for uid in notification_targets
-        ]
-        await asyncio.gather(*coroutines, return_exceptions=True)
+    # 3. Send notifications concurrently
+    if coroutines:
+        results = await asyncio.gather(*coroutines, return_exceptions=True)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(
+                    f"Error sending read receipt batch notification ({i}): {result}"
+                )
 
 
 @websocket_router.websocket("/ws")
@@ -1116,11 +1133,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
 
                 elif message_type == WebSocketMessageType.REPLY:
                     await handle_reply_message(payload, from_user, to_user, websocket)
-
-                elif message_type == WebSocketMessageType.REACTION:
-                    await handle_reaction_message(
-                        payload, from_user, to_user, websocket
-                    )
 
                 elif message_type == WebSocketMessageType.EDIT:
                     await handle_edit_message(payload, from_user, to_user, websocket)

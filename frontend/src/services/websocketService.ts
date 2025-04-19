@@ -13,7 +13,6 @@ enum MessageType {
   READ_RECEIPT_BATCH = "read_receipt_batch",
   ERROR = "error",
   PRESENCE = "presence",
-  REACTION = "reaction",
   REPLY = "reply",
   EDIT = "edit",
   DELETE = "delete",
@@ -247,12 +246,9 @@ class WebSocketService {
       status: (data.payload?.status as 'sent' | 'delivered' | 'read') || 
               (data.status as 'sent' | 'delivered' | 'read') || 'sent',
       attachments: data.payload?.attachments || data.attachments || [],
-      reactions: data.payload?.reactions || [],
-      replyTo: data.payload?.reply_to || data.reply_to,
-      isEdited: data.payload?.is_edited || data.is_edited || false,
-      editedAt: data.payload?.editedAt || data.payload?.edited_at || data.edited_at,
-      isDeleted: data.payload?.is_deleted || data.is_deleted || false,
-      deletedAt: data.payload?.deletedAt || data.payload?.deleted_at || data.deleted_at
+      replyTo: data.payload?.reply_to || data.payload?.replyTo || data.reply_to || data.replyTo,
+      isEdited: data.payload?.is_edited || data.payload?.isEdited || false,
+      isDeleted: data.payload?.is_deleted || data.payload?.isDeleted || false,
     };
   }
   
@@ -276,6 +272,7 @@ class WebSocketService {
         return;
       }
       
+      this.notifyEventHandlers();
       this.notifyMessageHandlers(data);
       
       const chatStore = useChatStore.getState();
@@ -363,14 +360,17 @@ class WebSocketService {
           
         case MessageType.READ_RECEIPT_BATCH:
           const readerId_batch = data.from || data.from_user;
-          const originalSenderId_batch = data.to || data.to_user; // This is the contactId for the store
+          // Use contact_id from the message payload, as this correctly identifies
+          // the conversation partner (original sender) even when the message is
+          // received by the reader's other devices.
+          const contactId_batch = data.contact_id || data.payload?.contactId;
           const messageIds_batch = (data.message_ids || data.payload?.messageIds || []) as string[];
           
-          if (originalSenderId_batch && messageIds_batch.length > 0) {
-            console.log(`[WS Service] Handling READ_RECEIPT_BATCH for ${messageIds_batch.length} messages from reader ${readerId_batch} for sender ${originalSenderId_batch}`);
-            // Use originalSenderId_batch as the contactId to update the correct conversation
+          if (contactId_batch && messageIds_batch.length > 0) {
+            console.log(`[WS Service] Handling READ_RECEIPT_BATCH for ${messageIds_batch.length} messages from reader ${readerId_batch} for contact ${contactId_batch}`);
+            // Use contactId_batch to update the correct conversation in the store
             messageIds_batch.forEach(msgId => {
-              chatStore.updateMessageStatus(String(msgId), originalSenderId_batch, 'read');
+              chatStore.updateMessageStatus(String(msgId), contactId_batch, 'read');
             });
             this.notifyEventHandlers(); // Notify generic handlers
           }
@@ -382,22 +382,6 @@ class WebSocketService {
           
           if (presenceUserId) {
             presenceManager.updateContactStatus(presenceUserId, presenceStatus as PresenceState);
-          }
-          break;
-          
-        case MessageType.REACTION:
-          const reactionData = data.payload || {};
-          const reactionMessageId = reactionData.messageId;
-          const reactionSenderId = data.from || data.from_user;
-          const reaction = reactionData.reaction;
-          const action = reactionData.action;
-          
-          if (reactionMessageId && reactionSenderId && reaction && (action === 'add' || action === 'remove')) {
-            const contactId = user?.id === reactionSenderId ? data.to || data.to_user : reactionSenderId;
-            
-            if (contactId) {
-              chatStore.updateMessageReaction(reactionMessageId, reactionSenderId, contactId, reaction, action);
-            }
           }
           break;
           
@@ -679,11 +663,6 @@ class WebSocketService {
         }
       });
       
-      const chatStore = useChatStore.getState();
-      messages.forEach((msgId: string) => {
-        chatStore.updateMessageStatus(msgId, recipient, 'read');
-      });
-      
       this.readReceiptQueue.delete(recipient);
     }
   }
@@ -815,43 +794,6 @@ class WebSocketService {
     
     // Let the backend assign the timestamp and update the UI when we get the response
     this.send(deleteMsg);
-    this.notifyEventHandlers();
-    
-    return true;
-  }
-  
-  sendReaction(contactId: string, messageId: string, reaction: string, action: 'add' | 'remove') {
-    if (!this.isConnected()) {
-      return false;
-    }
-    
-    const { user } = useAuthStore.getState();
-    if (!user) {
-      return false;
-    }
-    
-    const reactionMessage = {
-      type: MessageType.REACTION,
-      from: user.id,
-      to: contactId,
-      payload: {
-        messageId,
-        reaction,
-        action,
-        timestamp: new Date().toISOString()
-      }
-    };
-    
-    const chatStore = useChatStore.getState();
-    chatStore.updateMessageReaction(
-      messageId, 
-      user.id, 
-      contactId, 
-      reaction, 
-      action
-    );
-    
-    this.send(reactionMessage);
     this.notifyEventHandlers();
     
     return true;
@@ -1081,18 +1023,6 @@ class WebSocketService {
       
       // Process the event before passing it to handlers
       switch (event.type) {
-        case MessageType.REACTION:
-          // Make sure reactions have the necessary properties
-          if (event.payload) {
-            if (!event.payload.user_id && event.from) {
-              event.payload.user_id = event.from;
-            }
-            if (!event.payload.contact_id && event.to) {
-              event.payload.contact_id = event.to;
-            }
-          }
-          break;
-          
         case MessageType.EDIT:
         case MessageType.DELETE:
           // Make sure edit/delete events have user_id and contact_id

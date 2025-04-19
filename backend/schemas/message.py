@@ -25,12 +25,6 @@ class Attachment(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
-class Reaction(BaseModel):
-    user_id: str
-    reaction: str
-    created_at: datetime
-
-
 class MessageBase(BaseModel):
     text: str
     attachments: Optional[List[Attachment]] = None
@@ -52,7 +46,6 @@ class MessageInDB(MessageBase):
     updated_at: datetime
     delivered_at: Optional[datetime] = None
     read_at: Optional[datetime] = None
-    reactions: Optional[List[Reaction]] = None
     reply_to: Optional[str] = None
     is_edited: Optional[bool] = False
     edited_at: Optional[datetime] = None
@@ -72,7 +65,6 @@ class MessageResponse(MessageBase):
     updated_at: datetime
     delivered_at: Optional[datetime] = None
     read_at: Optional[datetime] = None
-    reactions: Optional[List[Reaction]] = None
     reply_to: Optional[str] = None
     is_edited: Optional[bool] = False
     edited_at: Optional[datetime] = None

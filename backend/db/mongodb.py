@@ -75,9 +75,6 @@ async def create_indexes():
             [("conversation_id", 1), ("created_at", -1)]
         )
 
-        # Index for reactions
-        await messages_collection.create_index([("reactions.user_id", 1), ("_id", 1)])
-
         # Index for replies
         await messages_collection.create_index("reply_to")
 

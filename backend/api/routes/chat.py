@@ -70,13 +70,6 @@ async def get_chat_history(
         if "text" not in message:
             message["text"] = ""
 
-        if "reactions" in message and message["reactions"]:
-            for reaction in message["reactions"]:
-                if "user_id" not in reaction:
-                    reaction["user_id"] = reaction.get("userId", "unknown")
-                if "created_at" not in reaction and "timestamp" in reaction:
-                    reaction["created_at"] = reaction["timestamp"]
-
         message["is_edited"] = message.get("is_edited", False)
         message["is_deleted"] = message.get("is_deleted", False)
 
