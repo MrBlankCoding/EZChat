@@ -89,9 +89,11 @@ if os.getenv("DEBUG", "False").lower() == "true":
         "http://localhost",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
+        "http://192.168.0.156:8000",
         # Add with wildcard ports
         "http://localhost:*",
         "http://127.0.0.1:*",
+        "http://192.168.0.156:*",
     ]
     # Remove any empty strings
     allowed_origins = [origin for origin in allowed_origins if origin]
@@ -99,12 +101,11 @@ if os.getenv("DEBUG", "False").lower() == "true":
 logger.info(f"Configured CORS with origins: {allowed_origins}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,  # Use the dynamically built list
-    allow_origin_regex=r"https?://(localhost|127\\.0\\.0\\.1|192\\.168\\.0\\.\\d{1,3}|your_domain_name\\.com)(:[0-9]+)?",  # Updated regex
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With"],
+    expose_headers=["Content-Length", "X-Process-Time"],
     max_age=600,  # Cache preflight requests for 10 minutes
 )
 
@@ -137,29 +138,6 @@ async def log_requests(request: Request, call_next):
 
     # Add processing time header for performance monitoring
     response.headers["X-Process-Time"] = str(process_time)
-
-    return response
-
-
-# Add custom CORS headers middleware - simplify for better performance
-@app.middleware("http")
-async def add_cors_headers(request: Request, call_next):
-    # Process the request and get the response
-    response = await call_next(request)
-
-    # Add CORS headers to every response
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-
-    # For preflight requests
-    if request.method == "OPTIONS":
-        response.status_code = 200
-        response.headers["Access-Control-Allow-Methods"] = (
-            "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-        )
-        response.headers["Access-Control-Allow-Headers"] = (
-            "Content-Type, Authorization, Accept"
-        )
 
     return response
 

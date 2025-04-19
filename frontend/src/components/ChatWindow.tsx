@@ -346,7 +346,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     }
   };
   
-  const handleSend = async () => {
+  const handleSend = async (e?: React.FormEvent) => {
+    // Prevent form submission from reloading the page
+    if (e) {
+      e.preventDefault();
+    }
+    
     if (!message.trim() && files.length === 0) {
       return;
     }
@@ -690,7 +695,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
         )}
 
         {/* Input Form */}
-        <form onSubmit={handleSend} className="flex items-end p-3">
+        <form onSubmit={(e) => handleSend(e)} className="flex items-end p-3">
           <div className="relative flex-1">
             {showAttachMenu && renderAttachmentMenu()}
             

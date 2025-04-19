@@ -1,6 +1,7 @@
-import React, { useState, FormEvent } from 'react';
+import React, { useState, FormEvent, useEffect } from 'react';
 import { useContactsStore } from '../stores/contactsStore';
-import { MagnifyingGlassIcon, PlusIcon, XMarkIcon, CheckIcon } from '@heroicons/react/24/outline';
+import { useAuthStore } from '../stores/authStore';
+import { MagnifyingGlassIcon, PlusIcon, XMarkIcon, CheckIcon, ClockIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import apiClient from '../services/apiClient';
 import { generateAvatarUrl } from '../utils/avatarUtils';
@@ -13,15 +14,28 @@ const AddContact = ({ onClose }: AddContactProps) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  
+  const { user } = useAuthStore();
   const { 
     contacts, 
     pendingContacts, 
+    sentPendingContacts,
     addContact, 
     acceptContact, 
     isLoading, 
-    error 
+    error,
+    fetchPendingContacts, 
+    fetchSentPendingContacts
   } = useContactsStore();
+  
+  // Fetch pending contacts when component mounts
+  useEffect(() => {
+    const loadPendingContacts = async () => {
+      await fetchPendingContacts();
+      await fetchSentPendingContacts();
+    };
+    
+    loadPendingContacts();
+  }, [fetchPendingContacts, fetchSentPendingContacts]);
   
   // Handle search submission
   const handleSearch = async (e: React.FormEvent) => {
@@ -172,39 +186,62 @@ const AddContact = ({ onClose }: AddContactProps) => {
             </div>
           </form>
           
-          {/* Pending contact requests */}
+          {/* Pending contact requests received */}
           {pendingContacts.length > 0 && (
             <div className="mb-4">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Pending Requests</h3>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Pending Requests Received</h3>
               <ul className="divide-y divide-gray-200 bg-gray-50 rounded-md">
-                {pendingContacts.map((contact, index) => {
-                  console.log(`Rendering pending contact ${index}:`, contact);
-                  return (
-                    <li key={`pending-${contact._id}-${index}`} className="py-3 px-4 flex items-center justify-between">
-                      <div className="flex items-center">
-                        <img
-                          className="h-8 w-8 rounded-full object-cover"
-                          src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
-                          alt={contact.contact_display_name}
-                        />
-                        <div className="ml-3">
-                          <p className="text-sm font-medium text-gray-900">{contact.contact_display_name}</p>
-                          <p className="text-xs text-gray-500">{contact.contact_email}</p>
-                          {/* Debug info - remove in production */}
-                          <p className="text-xs text-gray-400">ID: {contact._id}</p>
-                        </div>
+                {pendingContacts.map((contact, index) => (
+                  <li key={`pending-${contact._id}-${index}`} className="py-3 px-4 flex items-center justify-between">
+                    <div className="flex items-center">
+                      <img
+                        className="h-8 w-8 rounded-full object-cover"
+                        src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
+                        alt={contact.contact_display_name}
+                      />
+                      <div className="ml-3">
+                        <p className="text-sm font-medium text-gray-900">{contact.contact_display_name}</p>
+                        <p className="text-xs text-gray-500">{contact.contact_email}</p>
                       </div>
-                      <button
-                        onClick={() => handleAcceptContact(contact._id)}
-                        disabled={isLoading}
-                        className="inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
-                      >
-                        <CheckIcon className="h-4 w-4 mr-1" />
-                        Accept
-                      </button>
-                    </li>
-                  );
-                })}
+                    </div>
+                    <button
+                      onClick={() => handleAcceptContact(contact._id)}
+                      disabled={isLoading}
+                      className="inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
+                    >
+                      <CheckIcon className="h-4 w-4 mr-1" />
+                      Accept
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          
+          {/* Pending contact requests sent */}
+          {sentPendingContacts.length > 0 && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Pending Requests Sent</h3>
+              <ul className="divide-y divide-gray-200 bg-gray-50 rounded-md">
+                {sentPendingContacts.map((contact, index) => (
+                  <li key={`sent-pending-${contact._id}-${index}`} className="py-3 px-4 flex items-center justify-between">
+                    <div className="flex items-center">
+                      <img
+                        className="h-8 w-8 rounded-full object-cover"
+                        src={contact.contact_avatar_url || generateAvatarUrl(contact.contact_display_name, 150)}
+                        alt={contact.contact_display_name}
+                      />
+                      <div className="ml-3">
+                        <p className="text-sm font-medium text-gray-900">{contact.contact_display_name}</p>
+                        <p className="text-xs text-gray-500">{contact.contact_email}</p>
+                      </div>
+                    </div>
+                    <div className="inline-flex items-center px-2.5 py-1.5 text-xs text-gray-600 border border-gray-200 rounded">
+                      <ClockIcon className="h-4 w-4 mr-1" />
+                      Pending
+                    </div>
+                  </li>
+                ))}
               </ul>
             </div>
           )}

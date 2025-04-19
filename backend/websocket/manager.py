@@ -72,6 +72,13 @@ last_db_flush = time.time()
 db_flush_lock = asyncio.Lock()
 
 
+# JSON serializer for datetime objects
+def json_serializer(obj):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+
 # Helper function for conversation IDs
 def generate_conversation_id(user1: str, user2: str) -> str:
     """Generates a consistent conversation ID for two users."""
@@ -418,7 +425,15 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, user_id: str):
         """Connects a user and subscribes them to their groups."""
-        await websocket.accept()
+        # Check if the websocket is already accepted
+        if websocket.client_state == WebSocketState.CONNECTING:
+            await websocket.accept()
+        elif websocket.client_state != WebSocketState.CONNECTED:
+            logger.warning(
+                f"Cannot connect user {user_id}: WebSocket in invalid state {websocket.client_state}"
+            )
+            return
+
         self.active_connections[user_id] = websocket
         self.update_heartbeat(user_id)
         logger.info(
@@ -467,11 +482,17 @@ class ConnectionManager:
             # Close the WebSocket connection if it's still open
             if connection and connection.client_state != WebSocketState.DISCONNECTED:
                 try:
-                    await connection.close()
-                    logger.info(f"Closed WebSocket connection for user {user_id}")
-                except RuntimeError as e:
-                    # This can happen if the connection is already closing
+                    # Check if the connection is in a valid state before trying to close it
+                    if hasattr(connection, "close") and callable(connection.close):
+                        await connection.close()
+                        logger.info(f"Closed WebSocket connection for user {user_id}")
+                except (RuntimeError, AttributeError) as e:
+                    # This can happen if the connection is already closing or in an invalid state
                     logger.warning(f"Error closing WebSocket for {user_id}: {e}")
+                except Exception as e:
+                    logger.error(
+                        f"Unexpected error closing WebSocket for {user_id}: {e}"
+                    )
 
             # Stop batch processing if no connections left
             if not self.active_connections and self.batch_processing_task:
@@ -508,19 +529,30 @@ class ConnectionManager:
         self, connection: WebSocket, message_text: str, recipient_id: str
     ):
         """Internal helper to send a raw message string to a WebSocket connection."""
+        if not connection or not hasattr(connection, "client_state"):
+            # Connection object is invalid
+            logger.warning(f"Invalid connection object for {recipient_id}")
+            asyncio.create_task(self.disconnect(recipient_id))
+            return
+
         if connection.client_state == WebSocketState.CONNECTED:
             try:
                 await connection.send_text(message_text)
                 # logger_info(f"Sent message to {recipient_id}") # Reduced logging
-            except (ConnectionClosed, RuntimeError) as e:
-                # logger_info(f"Failed to send message to {recipient_id}: Connection closed or error: {e}")
+            except (ConnectionClosed, RuntimeError, AttributeError) as e:
+                logger.warning(f"Failed to send message to {recipient_id}: {e}")
                 # Schedule disconnection for this user if connection is broken
                 asyncio.create_task(self.disconnect(recipient_id))
             except Exception as e:
                 logger.error(f"Unexpected error sending message to {recipient_id}: {e}")
                 asyncio.create_task(self.disconnect(recipient_id))
-        # else:
-        # logger_info(f"Skipped sending to {recipient_id}: WebSocket not connected.")
+        else:
+            logger.debug(
+                f"Skipped sending to {recipient_id}: WebSocket not connected (state: {connection.client_state})"
+            )
+            # If state is not connected, schedule a disconnect to clean up
+            if connection.client_state != WebSocketState.CONNECTING:
+                asyncio.create_task(self.disconnect(recipient_id))
 
     async def send_personal_message(
         self, message: WebSocketMessage, recipient_id: str
@@ -550,7 +582,7 @@ class ConnectionManager:
         connection = self.active_connections.get(user_id)
         if connection:
             try:
-                message_str = json.dumps(json_data)
+                message_str = json.dumps(json_data, default=json_serializer)
                 await self._send_message_to_connection(connection, message_str, user_id)
                 return True
             except Exception as e:
@@ -830,11 +862,18 @@ async def handle_text_message(
     )
 
     if is_group_message:
-        await connection_manager.send_group_message(ws_message, group_id, from_user)
-    else:
-        sent_to_recipient = await connection_manager.send_personal_message(
-            ws_message, recipient_id
+        # For group messages, add extra context to help frontend route correctly
+        message_with_extras = ws_message.copy()
+        message_with_extras.custom_data = {
+            "is_group": True,
+            "group_id": group_id,
+            "message_endpoint": f"/api/groups/{group_id}/messages",
+        }
+        await connection_manager.send_group_message(
+            message_with_extras, group_id, from_user
         )
+    else:
+        await connection_manager.send_personal_message(ws_message, recipient_id)
         await connection_manager.send_personal_message(ws_message, from_user)  # Echo
         if not connection_manager.is_user_online(recipient_id):
             sender_user = await get_cached_user(from_user)
@@ -1459,7 +1498,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                     # Respond with pong
                     timestamp = message_data.get("timestamp", int(time.time() * 1000))
                     pong = PongMessage(timestamp=timestamp)
-                    await websocket.send_text(json.dumps(pong.dict()))
+                    await websocket.send_text(
+                        json.dumps(pong.dict(), default=json_serializer)
+                    )
                     continue
 
                 else:
@@ -1480,25 +1521,40 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected: {user_id}")
         if user_id:
-            await connection_manager.disconnect(user_id)
+            try:
+                await connection_manager.disconnect(user_id)
+            except Exception as e:
+                logger.error(f"Error during disconnect after WebSocketDisconnect: {e}")
 
     except ConnectionClosed:
         logger.info(f"WebSocket connection closed: {user_id}")
         if user_id:
-            await connection_manager.disconnect(user_id)
+            try:
+                await connection_manager.disconnect(user_id)
+            except Exception as e:
+                logger.error(f"Error during disconnect after ConnectionClosed: {e}")
 
     except HTTPException as http_exc:
         logger.warning(f"WebSocket authentication error: {http_exc.detail}")
-        await websocket.close(code=1008)
+        try:
+            await websocket.close(code=1008)
+        except Exception as e:
+            logger.error(f"Error closing websocket after HTTPException: {e}")
 
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         if user_id:
-            await connection_manager.disconnect(user_id)
+            try:
+                await connection_manager.disconnect(user_id)
+            except Exception as disconnect_error:
+                logger.error(
+                    f"Error during disconnect after exception: {disconnect_error}"
+                )
         try:
-            await websocket.close(code=1011)
-        except:
-            pass
+            if websocket.client_state != WebSocketState.DISCONNECTED:
+                await websocket.close(code=1011)
+        except Exception as close_error:
+            logger.error(f"Error closing websocket after exception: {close_error}")
     finally:
         # Ensure heartbeat task is cancelled
         if heartbeat_task and not heartbeat_task.done():
@@ -1513,7 +1569,9 @@ async def periodic_heartbeat(websocket: WebSocket, user_id: str):
                 # Only send if connection is still active
                 if user_id in connection_manager.active_connections:
                     pong = PongMessage(timestamp=int(time.time() * 1000))
-                    await websocket.send_text(json.dumps(pong.dict()))
+                    await websocket.send_text(
+                        json.dumps(pong.dict(), default=json_serializer)
+                    )
                     connection_manager.update_heartbeat(user_id)
                 else:
                     # Exit the heartbeat loop if connection is gone

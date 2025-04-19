@@ -1221,33 +1221,44 @@ class WebSocketService {
       } = data.payload || {};
       
       // Skip if missing required fields
-      if (!messageId || !text) {
+      if (!messageId) {
+        console.error('Invalid message: missing message ID');
         return;
       }
       
       // Determine if this is a group message
       const isGroupMessage = !!data.group_id;
+      const groupId = data.group_id || data.payload?.group_id;
       
       // Create a new message object
       const newMessage: Message = {
         id: messageId,
         senderId: data.from || '',
         receiverId: data.to || '',
-        text,
-        timestamp,
+        text: text || '',
+        timestamp: timestamp || new Date().toISOString(),
         status: status || 'sent',
-        attachments,
-        groupId: isGroupMessage ? data.group_id : undefined
+        attachments: attachments || [],
+        groupId: isGroupMessage ? groupId : undefined
       };
       
       // Access the chat store
       const chatStore = useChatStore.getState();
       
+      // Make sure the group exists in store if this is a group message
+      if (isGroupMessage && groupId && !chatStore.groups[groupId]) {
+        try {
+          await chatStore.fetchGroup(groupId);
+        } catch (error) {
+          console.error(`Failed to fetch group data for ${groupId}:`, error);
+        }
+      }
+      
       // Get the sender's display name
       let senderName = data.from || '';
-      if (isGroupMessage) {
+      if (isGroupMessage && groupId) {
         // For group messages, look up the sender name in the group members
-        const group = chatStore.groups[data.group_id];
+        const group = chatStore.groups[groupId];
         if (group) {
           const sender = group.members.find(m => m.user_id === data.from);
           if (sender) {
@@ -1268,7 +1279,12 @@ class WebSocketService {
       
       // If message is from someone else, send a read receipt
       if (data.from !== useAuthStore.getState().user?.id) {
-        const conversationId = isGroupMessage ? data.group_id : data.from;
+        const conversationId = isGroupMessage ? groupId : data.from;
+        
+        if (!conversationId) {
+          console.error('Cannot determine conversation ID for message:', data);
+          return;
+        }
         
         // Only automatically send read receipt if we're viewing this conversation
         if (chatStore.activeConversationId === conversationId) {
@@ -1295,48 +1311,101 @@ class WebSocketService {
   }
 
   private async handleGroupCreated(data: WebSocketMessage) {
-    const chatStore = useChatStore.getState();
-    const groupData = data.payload;
-    
-    // Update groups in store
-    if (groupData && groupData.id) {
-      const existingGroups = { ...chatStore.groups };
-      existingGroups[groupData.id] = groupData;
+    try {
+      console.log('[WS Service] Group created event received:', data);
       
-      useChatStore.setState({
-        groups: existingGroups
-      });
+      const chatStore = useChatStore.getState();
+      const groupData = data.payload?.group || data.payload;
+      
+      // Get the group ID (either from payload.id or from group_id)
+      const groupId = groupData?.id || groupData?._id || data.group_id || data.payload?.group_id;
+      
+      if (!groupId) {
+        console.error('Invalid group_created message: missing group ID');
+        console.error('Raw group data:', JSON.stringify(data));
+        return;
+      }
+      
+      console.log(`[WS Service] Processing group creation for group ID: ${groupId}`);
+      
+      // Update groups in store
+      if (groupData) {
+        // Ensure the group has the correct ID
+        groupData.id = groupId;
+        
+        const existingGroups = { ...chatStore.groups };
+        existingGroups[groupId] = groupData;
+        
+        useChatStore.setState({
+          groups: existingGroups
+        });
+        
+        // Set this group as the active group when we receive the group_created event
+        console.log(`[WS Service] Setting active group: ${groupId}`);
+        chatStore.setActiveGroup(groupId);
+      } else {
+        // If we only have the ID but no data, fetch the group info
+        console.log(`[WS Service] Fetching group data for ID: ${groupId}`);
+        await chatStore.fetchGroup(groupId);
+        chatStore.setActiveGroup(groupId);
+      }
+    } catch (error) {
+      console.error('Error handling group created event:', error);
     }
   }
   
   private async handleGroupUpdated(data: WebSocketMessage) {
-    const chatStore = useChatStore.getState();
-    const groupData = data.payload;
-    
-    if (groupData && groupData.id) {
-      const existingGroups = { ...chatStore.groups };
+    try {
+      const chatStore = useChatStore.getState();
+      const groupData = data.payload;
       
-      // Merge with existing group data if available
-      if (existingGroups[groupData.id]) {
-        existingGroups[groupData.id] = {
-          ...existingGroups[groupData.id],
-          ...groupData
-        };
-      } else {
-        existingGroups[groupData.id] = groupData;
+      // Get the group ID consistently
+      const groupId = groupData?.id || data.group_id || data.payload?.group_id;
+      
+      if (!groupId) {
+        console.error('Invalid group_updated message: missing group ID');
+        return;
       }
       
-      useChatStore.setState({
-        groups: existingGroups
-      });
+      if (groupData) {
+        const existingGroups = { ...chatStore.groups };
+        
+        // Merge with existing group data if available
+        if (existingGroups[groupId]) {
+          existingGroups[groupId] = {
+            ...existingGroups[groupId],
+            ...groupData,
+            id: groupId // Ensure ID is preserved
+          };
+        } else {
+          // If group doesn't exist in state, fetch full data
+          await chatStore.fetchGroup(groupId);
+          return;
+        }
+        
+        useChatStore.setState({
+          groups: existingGroups
+        });
+      } else {
+        // If we only have the ID but no data, fetch the group info
+        await chatStore.fetchGroup(groupId);
+      }
+    } catch (error) {
+      console.error('Error handling group updated event:', error);
     }
   }
   
   private async handleGroupDeleted(data: WebSocketMessage) {
-    const chatStore = useChatStore.getState();
-    const groupId = data.payload?.group_id;
-    
-    if (groupId) {
+    try {
+      const chatStore = useChatStore.getState();
+      // Get the group ID consistently
+      const groupId = data.payload?.group_id || data.payload?.id || data.group_id;
+      
+      if (!groupId) {
+        console.error('Invalid group_deleted message: missing group ID');
+        return;
+      }
+      
       const { [groupId]: _, ...remainingGroups } = chatStore.groups;
       const { [groupId]: __, ...remainingConversations } = chatStore.conversations;
       
@@ -1346,54 +1415,82 @@ class WebSocketService {
         // Reset active conversation if it was this group
         activeConversationId: chatStore.activeConversationId === groupId ? null : chatStore.activeConversationId
       });
+    } catch (error) {
+      console.error('Error handling group deleted event:', error);
     }
   }
   
   private async handleGroupMemberAdded(data: WebSocketMessage) {
-    const chatStore = useChatStore.getState();
-    const { group_id, added_member_id } = data.payload || {};
-    
-    if (group_id) {
+    try {
+      const chatStore = useChatStore.getState();
+      // Get the group ID consistently
+      const groupId = data.payload?.group_id || data.group_id;
+      const addedMemberId = data.payload?.added_member_id || data.payload?.user_id;
+      
+      if (!groupId) {
+        console.error('Invalid group_member_added message: missing group ID');
+        return;
+      }
+      
       // Refresh the group data from the server
-      await chatStore.fetchGroup(group_id);
+      await chatStore.fetchGroup(groupId);
       
       // If the added member is the current user, make sure conversation is created
       const { user } = useAuthStore.getState();
-      if (added_member_id === user?.id && !chatStore.conversations[group_id]) {
-        chatStore.setActiveGroup(group_id);
+      if (addedMemberId === user?.id && !chatStore.conversations[groupId]) {
+        chatStore.setActiveGroup(groupId);
       }
+    } catch (error) {
+      console.error('Error handling group member added event:', error);
     }
   }
   
   private async handleGroupMemberRemoved(data: WebSocketMessage) {
-    const chatStore = useChatStore.getState();
-    const { group_id, removed_member_id } = data.payload || {};
-    
-    if (group_id) {
-      // Refresh the group data from the server
-      await chatStore.fetchGroup(group_id);
+    try {
+      const chatStore = useChatStore.getState();
+      // Get the group ID consistently
+      const groupId = data.payload?.group_id || data.group_id;
+      const removedMemberId = data.payload?.removed_member_id || data.payload?.user_id;
+      
+      if (!groupId) {
+        console.error('Invalid group_member_removed message: missing group ID');
+        return;
+      }
       
       // If the removed member is the current user, remove the group from active conversations
       const { user } = useAuthStore.getState();
-      if (removed_member_id === user?.id) {
-        const { [group_id]: _, ...remainingConversations } = chatStore.conversations;
+      if (removedMemberId === user?.id) {
+        const { [groupId]: _, ...remainingConversations } = chatStore.conversations;
         
         useChatStore.setState({
           conversations: remainingConversations,
           // Reset active conversation if it was this group
-          activeConversationId: chatStore.activeConversationId === group_id ? null : chatStore.activeConversationId
+          activeConversationId: chatStore.activeConversationId === groupId ? null : chatStore.activeConversationId
         });
+      } else {
+        // Otherwise, just refresh the group data
+        await chatStore.fetchGroup(groupId);
       }
+    } catch (error) {
+      console.error('Error handling group member removed event:', error);
     }
   }
   
   private async handleGroupMemberUpdated(data: WebSocketMessage) {
-    const chatStore = useChatStore.getState();
-    const { group_id } = data.payload || {};
-    
-    if (group_id) {
+    try {
+      const chatStore = useChatStore.getState();
+      // Get the group ID consistently
+      const groupId = data.payload?.group_id || data.group_id;
+      
+      if (!groupId) {
+        console.error('Invalid group_member_updated message: missing group ID');
+        return;
+      }
+      
       // Simply refresh the group data from the server
-      await chatStore.fetchGroup(group_id);
+      await chatStore.fetchGroup(groupId);
+    } catch (error) {
+      console.error('Error handling group member updated event:', error);
     }
   }
   
@@ -1401,6 +1498,24 @@ class WebSocketService {
     const { user } = useAuthStore.getState();
     if (!user) {
       throw new Error('User not authenticated');
+    }
+    
+    if (!groupId) {
+      throw new Error('Invalid group ID');
+    }
+    
+    // Validate that group exists
+    const chatStore = useChatStore.getState();
+    const group = chatStore.groups[groupId];
+    if (!group) {
+      console.warn(`Sending message to unknown group: ${groupId}`);
+      // Try to fetch the group
+      try {
+        await chatStore.fetchGroup(groupId);
+      } catch (error) {
+        console.error(`Failed to fetch group ${groupId}:`, error);
+        throw new Error('Group not found');
+      }
     }
     
     try {
@@ -1427,7 +1542,7 @@ class WebSocketService {
         group_id: groupId,
         payload: {
           id: messageId,
-          text,
+          text: text || '',
           timestamp,
           status: 'sent',
           attachments: processedAttachments.length > 0 ? processedAttachments : undefined
@@ -1435,12 +1550,11 @@ class WebSocketService {
       };
       
       // Add the message to the chat store optimistically
-      const chatStore = useChatStore.getState();
       const newMessage: Message = {
         id: messageId,
         senderId: user.id,
         receiverId: '', // Not applicable for group messages
-        text,
+        text: text || '',
         timestamp,
         status: 'sent',
         attachments: processedAttachments,
@@ -1450,7 +1564,11 @@ class WebSocketService {
       chatStore.addMessage(newMessage);
       
       // Send the message
-      this.send(message);
+      if (!this.send(message)) {
+        // If sending failed, mark message as failed in the UI
+        chatStore.updateMessageStatus(messageId, groupId, 'failed');
+        throw new Error('Failed to send message');
+      }
       
       return messageId;
     } catch (error) {

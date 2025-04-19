@@ -61,17 +61,17 @@ async def get_group_details(
             status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
         )
 
-    # Fetch member details (assuming a function get_users_by_ids exists)
-    # This is an example, you'll need to implement get_users_by_ids
-    member_ids = [member.user_id for member in group.members]
-    # users = await db.get_users_by_ids(member_ids) # You need to implement this DB function
-    # temp placeholder for members details:
-    member_details = [
-        GroupMemberInfo(id=m.user_id, username=f"user_{m.user_id[:4]}")
-        for m in group.members
+    # Fetch member details using the existing get_users_by_ids function
+    member_ids = [member.user_id for member in group.members if member.is_active]
+    users = await db.get_users_by_ids(member_ids)
+
+    # Create proper member details from the fetched users
+    members_details = [
+        GroupMemberInfo(id=user.firebase_uid, username=user.display_name)
+        for user in users
     ]
 
-    return GroupDetails(**group.dict(), members_details=member_details)
+    return GroupDetails(**group.dict(), members_details=members_details)
 
 
 @router.put("/{group_id}", response_model=Group)

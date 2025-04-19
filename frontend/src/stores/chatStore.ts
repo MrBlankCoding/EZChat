@@ -24,7 +24,7 @@ export interface Message {
   receiverId: string;
   text: string;
   timestamp: number | string;
-  status: 'sent' | 'delivered' | 'read';
+  status: 'sent' | 'delivered' | 'read' | 'failed';
   attachments?: FileAttachment[];
   replyTo?: string;
   isEdited?: boolean;
@@ -66,7 +66,7 @@ interface ChatState {
   addMessage: (message: Message) => void;
   markMessagesAsRead: (contactId: string) => Promise<void>;
   setTypingIndicator: (contactId: string, isTyping: boolean) => void;
-  updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read') => void;
+  updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read' | 'failed') => void;
   updateContactStatus: (contactId: string, status: PresenceState) => void;
   clearError: () => void;
   
@@ -311,7 +311,7 @@ const useChatStore = create<ChatState>()(
         }));
       },
       
-      updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read') => {
+      updateMessageStatus: (messageId: string, contactId: string, status: 'delivered' | 'read' | 'failed') => {
         const msgId = String(messageId);
         const { conversations } = get();
         const conversation = conversations[contactId];
@@ -320,7 +320,7 @@ const useChatStore = create<ChatState>()(
         
         const updatedMessages = conversation.messages.map(message => {
           if (message.id === msgId) {
-            if (message.status !== status || status === 'read') {
+            if (message.status !== status || status === 'read' || status === 'failed') {
               return { ...message, status };
             }
           }
@@ -692,8 +692,14 @@ const useChatStore = create<ChatState>()(
         }
         
         try {
-          const response = await apiClient.get(`groups/${groupId}`);
+          console.log(`Fetching group data for: ${groupId}`);
+          const response = await apiClient.get(`/groups/${groupId}`);
           const group = response.data;
+          
+          // Ensure ID is properly normalized
+          if (!group.id && group._id) {
+            group.id = group._id;
+          }
           
           set(state => ({
             groups: {
@@ -702,8 +708,10 @@ const useChatStore = create<ChatState>()(
             }
           }));
           
+          console.log(`Successfully fetched group: ${group.name} (${groupId})`);
           return group;
         } catch (error) {
+          console.error(`Failed to fetch group ${groupId}:`, error);
           set({ 
             error: error instanceof Error ? error.message : `Failed to fetch group ${groupId}`,
           });
@@ -721,7 +729,7 @@ const useChatStore = create<ChatState>()(
         try {
           set({ isLoading: true, error: null });
           
-          const response = await apiClient.get(`groups/${groupId}/messages`);
+          const response = await apiClient.get(`/groups/${groupId}/messages`);
           const messages = response.data.map((message: any) => {
             // Process attachments to ensure they follow the FileAttachment structure
             const attachments = (message.attachments || []).map((att: any) => {
@@ -773,6 +781,7 @@ const useChatStore = create<ChatState>()(
             isLoading: false
           });
         } catch (error) {
+          console.error(`Failed to fetch group messages for ${groupId}:`, error);
           set({ 
             error: error instanceof Error ? error.message : 'Failed to fetch group messages',
             isLoading: false
@@ -799,6 +808,21 @@ const useChatStore = create<ChatState>()(
           
           const group = response.data;
           
+          // Ensure ID is properly extracted and normalized
+          if (!group.id && group._id) {
+            group.id = group._id;
+          }
+          
+          if (!group.id) {
+            console.error('Group created without ID:', group);
+            set({ 
+              error: 'Created group has no ID', 
+              isLoading: false 
+            });
+            return null;
+          }
+          
+          // Store the group in state
           set(state => ({
             groups: {
               ...state.groups,
@@ -807,8 +831,10 @@ const useChatStore = create<ChatState>()(
             isLoading: false
           }));
           
+          console.log(`Group created successfully with ID: ${group.id}`);
           return group;
         } catch (error) {
+          console.error('Error creating group:', error);
           set({ 
             error: error instanceof Error ? error.message : 'Failed to create group',
             isLoading: false

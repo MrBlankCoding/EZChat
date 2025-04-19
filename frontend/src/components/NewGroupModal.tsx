@@ -16,7 +16,7 @@ const NewGroupModal = ({ isOpen, onClose }: NewGroupModalProps) => {
   const [error, setError] = useState<string | null>(null);
   
   const { contacts } = useContactsStore();
-  const { createGroup } = useChatStore();
+  const { createGroup, setActiveGroup } = useChatStore();
   const navigate = useNavigate();
   
   // Reset form when modal is opened
@@ -50,6 +50,8 @@ const NewGroupModal = ({ isOpen, onClose }: NewGroupModalProps) => {
       
       if (newGroup) {
         onClose();
+        // Set the active group before navigation
+        setActiveGroup(newGroup.id);
         // Navigate to the new group chat
         navigate(`/chat/${newGroup.id}`);
       } else {

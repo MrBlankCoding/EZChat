@@ -27,12 +27,14 @@ export interface Contact {
 interface ContactsState {
   contacts: Contact[];
   pendingContacts: Contact[];
+  sentPendingContacts: Contact[];
   isLoading: boolean;
   error: string | null;
   
   // Actions
   fetchContacts: () => Promise<void>;
   fetchPendingContacts: () => Promise<void>;
+  fetchSentPendingContacts: () => Promise<void>;
   addContact: (userId: string) => Promise<void>;
   acceptContact: (contactId: string) => Promise<void>;
   blockContact: (contactId: string) => Promise<void>;
@@ -45,6 +47,7 @@ interface ContactsState {
 const useContactsStore = create<ContactsState>((set, get) => ({
   contacts: [],
   pendingContacts: [],
+  sentPendingContacts: [],
   isLoading: false,
   error: null,
   
@@ -78,6 +81,21 @@ const useContactsStore = create<ContactsState>((set, get) => ({
     }
   },
   
+  // Fetch sent pending contact requests
+  fetchSentPendingContacts: async () => {
+    try {
+      set({ isLoading: true, error: null });
+      const response = await apiClient.get('/contacts/sent-pending');
+      set({ sentPendingContacts: response.data, isLoading: false });
+    } catch (error) {
+      console.error('Error fetching sent pending contacts:', error);
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to fetch sent pending contacts',
+        isLoading: false
+      });
+    }
+  },
+  
   // Add a new contact
   addContact: async (contactId: string) => {
     try {
@@ -102,6 +120,7 @@ const useContactsStore = create<ContactsState>((set, get) => ({
       // Refresh contacts and pending contacts
       await get().fetchContacts();
       await get().fetchPendingContacts();
+      await get().fetchSentPendingContacts();
       
       set({ isLoading: false });
     } catch (error) {
@@ -131,6 +150,7 @@ const useContactsStore = create<ContactsState>((set, get) => ({
       // Refresh contacts and pending contacts
       await get().fetchContacts();
       await get().fetchPendingContacts();
+      await get().fetchSentPendingContacts();
       
       set({ isLoading: false });
     } catch (error) {
@@ -158,6 +178,8 @@ const useContactsStore = create<ContactsState>((set, get) => ({
       
       // Refresh contacts
       await get().fetchContacts();
+      await get().fetchPendingContacts();
+      await get().fetchSentPendingContacts();
       
       set({ isLoading: false });
     } catch (error) {
@@ -183,6 +205,7 @@ const useContactsStore = create<ContactsState>((set, get) => ({
       // Refresh contacts and pending contacts
       await get().fetchContacts();
       await get().fetchPendingContacts();
+      await get().fetchSentPendingContacts();
       
       set({ isLoading: false });
     } catch (error) {

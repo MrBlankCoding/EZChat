@@ -6,25 +6,68 @@ import { useChatStore } from '../stores/chatStore';
 import { useContactsStore } from '../stores/contactsStore';
 import ChatsList from '../components/ChatsList';
 import ChatWindow from '../components/ChatWindow';
+import PendingContactsView from '../components/PendingContactsView';
 import websocketService from '../services/websocketService';
 
 const ChatPage = () => {
   const { contactId } = useParams<{ contactId: string }>();
   const { user } = useAuthStore();
-  const { activeConversationId, setActiveConversation, fetchMessagesForContact } = useChatStore();
-  const { contacts, fetchContacts } = useContactsStore();
+  const { 
+    activeConversationId, 
+    conversations, 
+    groups,
+    fetchMessagesForContact, 
+    setActiveConversation,
+    setActiveGroup,
+    fetchGroup
+  } = useChatStore();
+  const { contacts, fetchContacts, fetchPendingContacts, fetchSentPendingContacts } = useContactsStore();
   const [isLoading, setIsLoading] = useState(true);
   const [wsStatus, setWsStatus] = useState({ state: 'unknown', readyState: 'unknown' });
+  const [isContactListOpen, setIsContactListOpen] = useState(false);
+  const [isMessagesLoaded, setIsMessagesLoaded] = useState(false);
   
-  // Set active conversation based on URL param
+  // Determine if contactId is a group or direct chat, then set active conversation accordingly
   useEffect(() => {
-    if (contactId) {
-      setActiveConversation(contactId);
-    } else if (activeConversationId === null) {
-      // Don't automatically set the first contact as active
-      // Let the user explicitly choose a chat
-    }
-  }, [contactId, activeConversationId, setActiveConversation]);
+    const setActiveChat = async () => {
+      if (!contactId) return;
+      
+      // Check if this is a group by checking if it exists in groups
+      const isGroup = !!groups[contactId];
+      
+      // If it's a group, use setActiveGroup, otherwise use setActiveConversation
+      if (isGroup) {
+        console.log(`Setting active group: ${contactId}`);
+        setActiveGroup(contactId);
+      } 
+      // Check if it's a contact
+      else if (contacts.some(c => c.contact_id === contactId)) {
+        console.log(`Setting active conversation: ${contactId}`);
+        setActiveConversation(contactId);
+      }
+      // If it's neither in groups nor contacts, it might be a newly created group
+      // Try to fetch the group first
+      else {
+        console.log(`Checking if ${contactId} is a group...`);
+        try {
+          const group = await fetchGroup(contactId);
+          if (group) {
+            console.log(`Found group ${contactId}, setting as active`);
+            setActiveGroup(contactId);
+          } else {
+            console.log(`No group found, setting as conversation: ${contactId}`);
+            setActiveConversation(contactId);
+          }
+        } catch (error) {
+          console.error(`Error checking group status for ${contactId}:`, error);
+          // Fall back to setting as a conversation
+          setActiveConversation(contactId);
+        }
+      }
+    };
+    
+    setActiveChat();
+  }, [contactId, groups, contacts, setActiveConversation, setActiveGroup, fetchGroup]);
   
   // Function to check and update WebSocket connection status
   const checkWsConnection = async () => {
@@ -55,51 +98,24 @@ const ChatPage = () => {
     }
   }, [user]);
   
-  // Fetch contacts and messages on initial load
+  // Fetch data when the component mounts
   useEffect(() => {
-    const fetchInitialData = async () => {
-      setIsLoading(true);
-      try {
-        // Fetch contacts first
-        await fetchContacts();
+    const fetchData = async () => {
+      if (user) {
+        setIsMessagesLoaded(false);
         
-        // After contacts are loaded, get the current state
-        const currentContacts = useContactsStore.getState().contacts;
-        const currentConversations = useChatStore.getState().conversations;
-
-        // Identify contacts that represent existing conversations
-        const existingConversationContactIds = currentContacts
-          .map(c => c.contact_id)
-          .filter(id => currentConversations[id] !== undefined);
-
-        // Fetch messages for all existing conversations concurrently
-        // We only fetch if the conversation exists but doesn't have messages yet,
-        // or if it's the currently selected one (in case hydration failed partially)
-        const messageFetchPromises = existingConversationContactIds
-          .filter(id => contactId === id || !currentConversations[id]?.messages?.length) 
-          .map(id => fetchMessagesForContact(id));
-          
-        if (messageFetchPromises.length > 0) {
-            console.log(`[ChatPage] Fetching messages for ${messageFetchPromises.length} conversations on load.`);
-            await Promise.all(messageFetchPromises);
-        }
-
-      } catch (error) {
-        console.error('Error fetching initial data:', error);
-        // Optionally set an error state here
-      } finally {
+        // Fetch all contacts
+        await fetchContacts();
+        await fetchPendingContacts();
+        await fetchSentPendingContacts();
+        
+        setIsMessagesLoaded(true);
         setIsLoading(false);
       }
     };
     
-    if (user) { // Ensure user is authenticated before fetching
-        fetchInitialData();
-    } else {
-        setIsLoading(false); // Not authenticated, stop loading
-    }
-    // Depend on fetchContacts, fetchMessagesForContact, and user. 
-    // contactId is implicitly handled by fetchMessagesForContact if needed.
-  }, [fetchContacts, fetchMessagesForContact, user]); 
+    fetchData();
+  }, [fetchContacts, fetchPendingContacts, fetchSentPendingContacts, user]);
   
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-50 dark:bg-dark-950 transition-colors duration-200">
@@ -122,25 +138,7 @@ const ChatPage = () => {
           ) : activeConversationId ? (
             <ChatWindow contactId={activeConversationId} />
           ) : (
-            <div className="flex-1 flex items-center justify-center bg-white dark:bg-dark-900 transition-colors duration-200">
-              <div className="text-center max-w-md px-4 animate-fade-in">
-                <svg 
-                  className="h-16 w-16 mx-auto text-gray-400 dark:text-gray-600 mb-4" 
-                  xmlns="http://www.w3.org/2000/svg" 
-                  fill="none" 
-                  viewBox="0 0 24 24" 
-                  stroke="currentColor"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                <h3 className="text-xl font-medium text-gray-900 dark:text-white">No conversation selected</h3>
-                <p className="mt-2 text-base text-gray-500 dark:text-gray-400">
-                  {contacts.length > 0 
-                    ? 'Select a chat from the list to start messaging' 
-                    : 'Add a contact to start your first conversation'}
-                </p>
-              </div>
-            </div>
+            <PendingContactsView />
           )}
         </div>
       </div>

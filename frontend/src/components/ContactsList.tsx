@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Contact, useContactsStore } from '../stores/contactsStore';
 import { useChatStore } from '../stores/chatStore';
@@ -13,11 +13,21 @@ interface ContactsListProps {
 
 const ContactsList = ({ contacts, isContactsPage }: ContactsListProps) => {
   const navigate = useNavigate();
-  const { deleteContact } = useContactsStore();
+  const { deleteContact, fetchPendingContacts, fetchSentPendingContacts } = useContactsStore();
   const { setActiveConversation } = useChatStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddContact, setShowAddContact] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
+
+  // Fetch contacts when component mounts
+  useEffect(() => {
+    const loadData = async () => {
+      await fetchPendingContacts();
+      await fetchSentPendingContacts();
+    };
+    
+    loadData();
+  }, [fetchPendingContacts, fetchSentPendingContacts]);
 
   // Filter contacts by search term
   const filteredContacts = contacts.filter((contact) => {

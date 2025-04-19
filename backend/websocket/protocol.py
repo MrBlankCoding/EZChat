@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 import uuid
 from datetime import datetime
 import json
+from utils.json_utils import dumps as json_dumps
 
 
 class WebSocketMessageType(str, Enum):
@@ -42,8 +43,20 @@ class WebSocketMessage(BaseModel):
     from_user: str = Field(..., alias="from")
     to_user: Optional[str] = Field(None, alias="to")
     group_id: Optional[str] = None
+    custom_data: Optional[Dict[str, Any]] = None
 
     model_config = {"populate_by_name": True}
+
+    def dict(self, *args, **kwargs):
+        """Serialize to dict with custom data included."""
+        d = super().model_dump(*args, by_alias=True, **kwargs)
+
+        # Add custom_data values to top level if it exists
+        if self.custom_data:
+            for key, value in self.custom_data.items():
+                d[key] = value
+
+        return d
 
 
 class AttachmentData(BaseModel):
@@ -127,6 +140,12 @@ class TextMessage(WebSocketMessage):
             payload["reply_to"] = d.pop("reply_to", None)
 
         d["payload"] = payload
+
+        # Add custom_data if it exists
+        if self.custom_data:
+            for key, value in self.custom_data.items():
+                d[key] = value
+
         # 'type', 'from', 'to', 'group_id' should already be in d from super().model_dump()
         return d
 
@@ -369,8 +388,8 @@ class ErrorMessage(BaseModel):
         """
         # Use the custom dict method to get the desired structure
         data = self.dict(*args, **kwargs)
-        # Use standard json.dumps
-        return json.dumps(data)
+        # Use custom json dumps with datetime handling
+        return json_dumps(data)
 
 
 class TimezoneMessage(WebSocketMessage):

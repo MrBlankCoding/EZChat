@@ -1,5 +1,5 @@
 // Message related types
-export type MessageStatus = 'sent' | 'delivered' | 'read';
+export type MessageStatus = 'sent' | 'delivered' | 'read' | 'failed';
 
 export interface Attachment {
   id?: string;

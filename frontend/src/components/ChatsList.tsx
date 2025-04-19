@@ -67,14 +67,14 @@ const ChatsList = () => {
     for (const [groupId, group] of Object.entries(groups)) {
       const conversation = conversations[groupId];
       
-      // Skip if this group doesn't have a conversation entry yet
-      if (!conversation) continue;
+      // Skip if this group doesn't have a conversation entry yet or is missing necessary data
+      if (!conversation || !group) continue;
       
       const lastMessage = conversation.messages[conversation.messages.length - 1];
       
       // Find sender name for last message if available
       let lastMessageSender = '';
-      if (lastMessage && lastMessage.senderId !== user?.id) {
+      if (lastMessage && lastMessage.senderId !== user?.id && group?.members) {
         const sender = group.members.find(m => m.user_id === lastMessage.senderId);
         if (sender) {
           lastMessageSender = sender.display_name.split(' ')[0] + ': ';
@@ -83,14 +83,14 @@ const ChatsList = () => {
       
       items.push({
         id: groupId,
-        name: group.name,
+        name: group.name || 'Unnamed Group',
         avatar: group.avatar_url,
         lastMessage: lastMessage ? (lastMessageSender + lastMessage.text) : '',
         timestamp: lastMessage?.timestamp || conversation._lastUpdated || group.created_at || 0,
         unreadCount: conversation.messages.filter(
           msg => msg.senderId !== user?.id && msg.status !== 'read'
         ).length,
-        memberCount: group.members.length,
+        memberCount: group.members?.length || 0,
         isPinned: conversation.isPinned || false,
         isGroup: true
       });
@@ -219,7 +219,7 @@ const ChatsList = () => {
                   {!chat.isGroup && (
                     <StatusIndicator status={chat.status} className="absolute bottom-0 right-0 shadow border-2 border-white dark:border-dark-800" />
                   )}
-                  {chat.isGroup && chat.memberCount && (
+                  {chat.isGroup && typeof chat.memberCount === 'number' && chat.memberCount > 0 && (
                     <div className="absolute -bottom-1 -right-1 bg-gray-100 dark:bg-dark-600 text-xs font-medium text-gray-800 dark:text-gray-300 rounded-full h-5 min-w-[1.25rem] flex items-center justify-center px-1 border border-white dark:border-dark-800">
                       {chat.memberCount}
                     </div>

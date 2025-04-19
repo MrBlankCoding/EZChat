@@ -101,6 +101,45 @@ async def get_pending_contacts(current_user: FirebaseToken = Depends(get_current
     return result
 
 
+@router.get("/sent-pending", response_model=List[ContactWithUserInfo])
+async def get_sent_pending_contacts(
+    current_user: FirebaseToken = Depends(get_current_user),
+):
+    """
+    Get all pending contact requests sent by the current user.
+    """
+    contacts_collection = get_contacts_collection()
+    users_collection = get_users_collection()
+
+    # Find pending contacts where user is the sender
+    cursor = contacts_collection.find(
+        {"user_id": current_user.firebase_uid, "status": ContactStatus.PENDING}
+    )
+
+    contacts = await cursor.to_list(length=100)
+
+    # Enrich with user information
+    result = []
+    for contact in contacts:
+        contact["_id"] = str(contact["_id"])
+
+        # Get contact user info
+        contact_user = await users_collection.find_one(
+            {"firebase_uid": contact["contact_id"]}
+        )
+
+        if contact_user:
+            # Add user info to contact
+            contact["contact_email"] = contact_user["email"]
+            contact["contact_display_name"] = contact_user["display_name"]
+            contact["contact_avatar_url"] = contact_user.get("avatar_url")
+            contact["contact_status"] = contact_user.get("status", "offline")
+
+            result.append(contact)
+
+    return result
+
+
 @router.post("/", response_model=ContactResponse, status_code=status.HTTP_201_CREATED)
 async def add_contact(
     contact_create: ContactCreate,

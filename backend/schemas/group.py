@@ -9,12 +9,16 @@ UserId = str
 
 class GroupMember(BaseModel):
     user_id: UserId
-    # You could add roles later, e.g., 'admin', 'member'
-    # role: str = "member"
+    role: str = "member"  # Possible values: "admin", "member"
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+    is_active: bool = True
 
 
 class GroupBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = ""
+    avatar_url: Optional[str] = None
+    is_public: bool = True
 
 
 class GroupCreate(GroupBase):
@@ -24,6 +28,9 @@ class GroupCreate(GroupBase):
 
 class GroupUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_public: Optional[bool] = None
 
 
 # Represents the group document stored in MongoDB

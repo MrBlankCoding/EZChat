@@ -36,11 +36,11 @@ async def create_group(
     users_collection: Collection = db["users"]
 
     # Include creator and deduplicate member list
-    member_ids = list(set([current_user.id] + group_data.members))
+    member_ids = list(set([current_user.firebase_uid] + group_data.initial_member_ids))
 
     # Validate members exist
     members_count = await users_collection.count_documents(
-        {"_id": {"$in": [ObjectId(user_id) for user_id in member_ids]}}
+        {"firebase_uid": {"$in": member_ids}}
     )
     if members_count != len(member_ids):
         raise HTTPException(
@@ -53,7 +53,7 @@ async def create_group(
     group_members = [
         GroupMember(
             user_id=user_id,
-            role="admin" if user_id == current_user.id else "member",
+            role="admin" if user_id == current_user.firebase_uid else "member",
             joined_at=now,
             is_active=True,
         ).dict()
@@ -67,20 +67,33 @@ async def create_group(
         "description": group_data.description,
         "avatar_url": group_data.avatar_url,
         "is_public": group_data.is_public,
-        "creator_id": current_user.id,
+        "creator_id": current_user.firebase_uid,
         "members": group_members,
         "created_at": now,
         "updated_at": now,
         "last_message_at": None,
+        "is_group": True,
     }
 
     await groups_collection.insert_one(new_group)
     new_group["member_count"] = len(member_ids)
 
-    # Notify members
+    # Notify members with enhanced payload
     for member_id in member_ids:
         await connection_manager.send_json_to_user(
-            member_id, {"type": "group_created", "payload": new_group}
+            member_id,
+            {
+                "type": "group_created",
+                "payload": {
+                    "group": new_group,
+                    "is_group": True,
+                    "group_id": new_group["_id"],
+                },
+                "is_group": True,
+                "group_id": new_group["_id"],
+                "message_endpoint": f"/api/groups/{new_group['_id']}/messages",
+                "group_endpoint": f"/api/groups/{new_group['_id']}",
+            },
         )
 
     return new_group
@@ -93,7 +106,7 @@ async def get_user_groups(
 ):
     groups_collection: Collection = db["groups"]
     cursor = groups_collection.find(
-        {"members.user_id": current_user.id, "members.is_active": True}
+        {"members.user_id": current_user.firebase_uid, "members.is_active": True}
     )
 
     groups = []
@@ -121,7 +134,8 @@ async def get_group(
 
     # Verify current user is active member
     if not any(
-        m["user_id"] == current_user.id and m["is_active"] for m in group["members"]
+        m["user_id"] == current_user.firebase_uid and m["is_active"]
+        for m in group["members"]
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -131,14 +145,14 @@ async def get_group(
     # Get active member details
     active_member_ids = [m["user_id"] for m in group["members"] if m["is_active"]]
 
-    cursor = users_collection.find(
-        {"_id": {"$in": [ObjectId(user_id) for user_id in active_member_ids]}}
-    )
+    cursor = users_collection.find({"firebase_uid": {"$in": active_member_ids}})
 
     members_details = []
     async for user in cursor:
-        user["_id"] = str(user["_id"])
-        members_details.append(user)
+        # Transform to match GroupMemberInfo schema
+        members_details.append(
+            {"id": user["firebase_uid"], "username": user["display_name"]}
+        )
 
     group["member_count"] = len(active_member_ids)
     group["members_details"] = members_details
@@ -163,7 +177,9 @@ async def update_group(
 
     # Verify current user is admin
     if not any(
-        m["user_id"] == current_user.id and m["role"] == "admin" and m["is_active"]
+        m["user_id"] == current_user.firebase_uid
+        and m["role"] == "admin"
+        and m["is_active"]
         for m in group["members"]
     ):
         raise HTTPException(
@@ -212,11 +228,13 @@ async def delete_group(
 
     # Verify user is creator or admin
     is_admin = any(
-        m["user_id"] == current_user.id and m["role"] == "admin" and m["is_active"]
+        m["user_id"] == current_user.firebase_uid
+        and m["role"] == "admin"
+        and m["is_active"]
         for m in group["members"]
     )
 
-    if not is_admin and group["creator_id"] != current_user.id:
+    if not is_admin and group["creator_id"] != current_user.firebase_uid:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only group creator or admins can delete the group",
@@ -247,7 +265,7 @@ async def add_group_member(
     users_collection: Collection = db["users"]
 
     # Verify user exists
-    if not await users_collection.find_one({"_id": ObjectId(member_data.user_id)}):
+    if not await users_collection.find_one({"firebase_uid": member_data.user_id}):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
@@ -260,7 +278,9 @@ async def add_group_member(
 
     # Verify current user is admin
     if not any(
-        m["user_id"] == current_user.id and m["role"] == "admin" and m["is_active"]
+        m["user_id"] == current_user.firebase_uid
+        and m["role"] == "admin"
+        and m["is_active"]
         for m in group["members"]
     ):
         raise HTTPException(
@@ -346,13 +366,13 @@ async def remove_group_member(
     user_is_member = False
 
     for member in group["members"]:
-        if member["user_id"] == current_user.id and member["is_active"]:
+        if member["user_id"] == current_user.firebase_uid and member["is_active"]:
             user_is_member = True
             if member["role"] == "admin":
                 is_admin = True
 
     # Check permissions - users can remove themselves, admins can remove others
-    if not user_is_member or (user_id != current_user.id and not is_admin):
+    if not user_is_member or (user_id != current_user.firebase_uid and not is_admin):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have permission to remove this member",
@@ -370,7 +390,7 @@ async def remove_group_member(
         )
 
     # Don't allow removing last admin
-    if user_id != current_user.id:  # Skip if removing self
+    if user_id != current_user.firebase_uid:  # Skip if removing self
         admin_count = sum(
             1 for m in group["members"] if m["role"] == "admin" and m["is_active"]
         )
@@ -440,7 +460,9 @@ async def update_group_member_role(
 
     # Verify current user is admin
     if not any(
-        m["user_id"] == current_user.id and m["role"] == "admin" and m["is_active"]
+        m["user_id"] == current_user.firebase_uid
+        and m["role"] == "admin"
+        and m["is_active"]
         for m in group["members"]
     ):
         raise HTTPException(
@@ -527,7 +549,8 @@ async def get_group_messages(
 
     # Verify current user is member
     if not any(
-        m["user_id"] == current_user.id and m["is_active"] for m in group["members"]
+        m["user_id"] == current_user.firebase_uid and m["is_active"]
+        for m in group["members"]
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
