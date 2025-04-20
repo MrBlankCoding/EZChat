@@ -23,7 +23,7 @@ class GroupBase(BaseModel):
 
 class GroupCreate(GroupBase):
     # When creating, specify initial members (creator is added automatically)
-    initial_member_ids: List[UserId] = []
+    member_ids: Optional[List[UserId]] = []
 
 
 class GroupUpdate(BaseModel):

@@ -20,12 +20,11 @@ import { storage } from '../services/firebaseConfig';
 import MessageBubble from './MessageBubble';
 import TypingIndicator from './TypingIndicator';
 import StatusIndicator from './StatusIndicator';
-import { formatMessageTime } from '../utils/dateUtils';
-import { Message, Attachment, Group, GroupMember } from '../types';
 import { useWebSocketConnection } from '../hooks/useWebSocketConnection';
 import { generateAvatarUrl } from '../utils/avatarUtils';
 import EmojiPicker, { EmojiClickData, Theme, EmojiStyle, Categories } from 'emoji-picker-react';
 import { toast } from 'react-hot-toast';
+import { Message, GroupMember } from '../types';
 
 interface ChatWindowProps {
   contactId: string;
@@ -44,45 +43,40 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const [actionMode, setActionMode] = useState<ActionMode>('none');
   const [targetMessageId, setTargetMessageId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
-  
-  // Force a refresh every time there's a websocket event
-  const [wsEventCounter, setWsEventCounter] = useState(0);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
   
   const { user } = useAuthStore();
+  const { contacts } = useContactsStore();
+  const { connectionStatus } = useWebSocketConnection();
+  
   const { 
     messages, 
     typingIndicator, 
     contactStatus,
     groups,
-    conversation
+    conversation,
+    editMessage,
+    sendReply
   } = useChatStore(state => {
     const conversation = state.conversations[contactId];
     return {
       messages: conversation?.messages || [],
       typingIndicator: state.typingIndicators[contactId] || false,
-      contactStatus: conversation?.contactStatus || 'offline', // Assuming status is stored here
+      contactStatus: conversation?.contactStatus || 'offline',
       groups: state.groups,
-      conversation
+      conversation,
+      editMessage: state.editMessage,
+      sendReply: state.sendReply
     };
   }, (oldState, newState) => {
-    // Custom equality check: re-render if messages array ref, typing, status changes, OR message statuses change.
     const oldStatuses = oldState.messages.map(m => m.status).join(',');
     const newStatuses = newState.messages.map(m => m.status).join(',');
     
     return oldState.messages === newState.messages && 
            oldState.typingIndicator === newState.typingIndicator &&
            oldState.contactStatus === newState.contactStatus &&
-           oldStatuses === newStatuses; // Add check for message statuses
+           oldStatuses === newStatuses;
   });
-  
-  // Select actions separately (they don't change)
-  const { editMessage, sendReply } = useChatStore(state => ({ 
-    editMessage: state.editMessage, 
-    sendReply: state.sendReply 
-  }));
-  
-  const { contacts } = useContactsStore();
-  const { connectionStatus } = useWebSocketConnection();
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -92,23 +86,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
   const observedMessagesRef = useRef<Set<string>>(new Set());
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   
-  const [showGroupInfo, setShowGroupInfo] = useState(false);
-  
-  if (!contacts || contacts.length === 0) {
-    return (
-      <div className="flex-1 flex items-center justify-center bg-white dark:bg-dark-900 transition-colors duration-200">
-        <p className="text-gray-500 dark:text-gray-400">Loading contacts...</p>
-      </div>
-    );
-  }
-  
-  const contact = contacts.find(c => c.contact_id === contactId);
+  const contact = contacts?.find(c => c.contact_id === contactId);
   const isContactTyping = typingIndicator;
-  
-  // Find the *current* target message data based on ID
   const currentTargetMessage = targetMessageId ? messages.find(m => m.id === targetMessageId) : null;
-
-  // Define cancelAction *before* the effect that uses it
+  const isGroupChat = conversation?.isGroup || false;
+  const groupDetails = isGroupChat ? groups[contactId] : null;
+  
   const cancelAction = useCallback(() => {
     setTargetMessageId(null);
     setActionMode('none');
@@ -116,14 +99,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     setFiles([]);
   }, []);
 
-  // Effect to auto-cancel action if target message disappears (e.g., deleted)
-  useEffect(() => {
-    if (targetMessageId && !currentTargetMessage) {
-      console.warn('Target message for action not found, cancelling action.');
-      cancelAction();
-    }
-  }, [targetMessageId, currentTargetMessage, cancelAction]); // Depend on currentTargetMessage derived from messages
-  
   const messageRefCallback = useCallback((node: HTMLDivElement | null, messageId: string) => {
     if (node) {
       messageRefs.current.set(messageId, node);
@@ -139,6 +114,160 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     }
   }, [contactId, user?.id]);
   
+  const handleTyping = useCallback(() => {
+    if (!isTyping) {
+      setIsTyping(true);
+      websocketService.sendTypingIndicator(contactId, true);
+    }
+    
+    if (typingTimeout) {
+      clearTimeout(typingTimeout);
+    }
+    
+    const timeout = setTimeout(() => {
+      setIsTyping(false);
+      websocketService.sendTypingIndicator(contactId, false);
+    }, 2000);
+    
+    setTypingTimeout(timeout);
+  }, [contactId, isTyping, typingTimeout]);
+  
+  const handleStartEdit = useCallback((msg: Message) => {
+    setTargetMessageId(msg.id);
+    setActionMode('edit');
+    setMessage(msg.text);
+    inputRef.current?.focus();
+  }, []);
+
+  const handleStartReply = useCallback((msg: Message) => {
+    setTargetMessageId(msg.id);
+    setActionMode('reply');
+    setMessage('');
+    inputRef.current?.focus();
+  }, []);
+  
+  const uploadFiles = async (): Promise<any[]> => {
+    if (files.length === 0) return [];
+    
+    setUploading(true);
+    const uploads = files.map(file => {
+      return new Promise<any>((resolve, reject) => {
+        const storageRef = ref(storage, `chats/${user?.id}/${contactId}/${Date.now()}_${file.name}`);
+        const uploadTask = uploadBytesResumable(storageRef, file);
+        
+        uploadTask.on(
+          'state_changed',
+          () => {},
+          (error) => reject(error),
+          async () => {
+            try {
+              const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+              
+              let primaryType = 'file';
+              if (file.type.startsWith('image/')) {
+                primaryType = 'image';
+              } else if (file.type.startsWith('video/')) {
+                primaryType = 'video';
+              } else if (file.type.startsWith('audio/')) {
+                primaryType = 'audio';
+              }
+              
+              resolve({
+                type: primaryType,
+                url: downloadURL,
+                name: file.name,
+                size: file.size,
+                fileType: file.type,
+              });
+            } catch (error) {
+              reject(error);
+            }
+          }
+        );
+      });
+    });
+    
+    try {
+      const attachments = await Promise.all(uploads);
+      setUploading(false);
+      setFiles([]);
+      return attachments;
+    } catch (error) {
+      console.error('Error uploading files:', error);
+      setUploading(false);
+      return [];
+    }
+  };
+
+  const handleSend = async (e?: React.FormEvent) => {
+    if (e) {
+      e.preventDefault();
+    }
+    
+    if (!message.trim() && files.length === 0) {
+      return;
+    }
+
+    setIsSending(true);
+    
+    try {
+      if (actionMode === 'edit' && targetMessageId) {
+        await editMessage(targetMessageId, contactId, message.trim());
+        toast.success('Message updated');
+      } else if (actionMode === 'reply' && targetMessageId) {
+        await sendReply(contactId, message.trim(), targetMessageId, await uploadFiles());
+        toast.success('Reply sent');
+      } else {
+        await useChatStore.getState().sendMessage(contactId, message.trim(), await uploadFiles());
+      }
+
+      cancelAction();
+    } catch (error) {
+      console.error('Error processing message:', error);
+      toast.error('Failed to process message.');
+      setUploading(false);
+    } finally {
+      setIsSending(false);
+    }
+  };
+  
+  const handleMessageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setMessage(e.target.value);
+    handleTyping();
+  };
+  
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const fileArray = Array.from(e.target.files);
+      setFiles(prev => [...prev, ...fileArray]);
+      setShowAttachMenu(false);
+    }
+  };
+  
+  const removeFile = (index: number) => {
+    setFiles(files.filter((_, i) => i !== index));
+  };
+  
+  const handleAttachmentClick = () => {
+    setShowAttachMenu(!showAttachMenu);
+    setShowEmojiPicker(false);
+  };
+  
+  const handleFileTypeSelect = (type: string) => {
+    if (fileInputRef.current) {
+      fileInputRef.current.setAttribute('accept', type);
+      fileInputRef.current.click();
+    }
+    setShowAttachMenu(false);
+  };
+  
+  const handleEmojiClick = (emojiData: EmojiClickData) => {
+    setMessage(prevMessage => prevMessage + emojiData.emoji);
+    setShowEmojiPicker(false);
+    inputRef.current?.focus();
+  };
+  
+  // Setup intersection observer for messages
   useEffect(() => {
     observedMessagesRef.current = new Set();
     
@@ -163,6 +292,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     return () => observer.disconnect();
   }, [contactId, handleMessageInView]);
   
+  // Observe message elements when they change
   useEffect(() => {
     const observer = messageObserverRef.current;
     if (!observer) return;
@@ -174,14 +304,15 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     });
   }, [messages]);
   
+  // Auto-scroll to bottom of messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
   
+  // Handle visibility changes for read receipts
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && user && contactId) {
-        // Get latest state directly from store inside handler
         const conversation = useChatStore.getState().conversations[contactId];
         if (!conversation?.messages?.length) return;
         
@@ -198,12 +329,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [contactId, user]); // Removed conversations from dependency array
+  }, [contactId, user]);
   
+  // Auto-focus input on contact change
   useEffect(() => {
     inputRef.current?.focus();
   }, [contactId]);
   
+  // Handle clicks outside emoji picker
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target as Node)) {
@@ -215,6 +348,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
+  // Handle escape key for emoji picker
   useEffect(() => {
     const handleEscapeKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && showEmojiPicker) {
@@ -226,29 +360,35 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     return () => document.removeEventListener('keydown', handleEscapeKey);
   }, [showEmojiPicker]);
   
-  // Subscribe to WebSocket events to handle UI updates
+  // WebSocket event handling
   useEffect(() => {
     if (!contactId) return;
     
     const handleWebSocketEvent = () => {
-      // Keep the logic to fetch messages if none are loaded, triggered by an event
-      const currentConversation = useChatStore.getState().conversations[contactId];
+      const state = useChatStore.getState();
+      const currentConversation = state.conversations[contactId];
+      const isGroup = currentConversation?.isGroup || state.groups[contactId] !== undefined;
+
       if (!currentConversation || currentConversation.messages?.length === 0) {
-        useChatStore.getState().fetchMessagesForContact(contactId);
-      }
-      
-      // Check for any missed read receipts
-      const conversation = useChatStore.getState().conversations[contactId]; // Get latest state
-      if (conversation?.messages?.length > 0) {
-        const unreadMessages = conversation.messages.filter(
-          msg => msg.senderId === contactId && msg.status !== 'read'
-        );
-        
-        if (unreadMessages.length > 0) {
-          unreadMessages.forEach(msg => {
-            // Use the queuing mechanism in websocketService
-            websocketService.sendReadReceipt(contactId, msg.id);
-          });
+        if (isGroup) {
+          state.fetchMessagesForGroup(contactId);
+        } else {
+          state.fetchMessagesForContact(contactId);
+        }
+      } else {
+        const conversation = currentConversation;
+        if (conversation?.messages?.length > 0) {
+          const unreadMessages = conversation.messages.filter(
+            msg => msg.senderId === contactId && msg.status !== 'read'
+          );
+
+          if (unreadMessages.length > 0) {
+            unreadMessages.forEach(msg => {
+              if (!isGroup) {
+                websocketService.sendReadReceipt(contactId, msg.id);
+              }
+            });
+          }
         }
       }
     };
@@ -256,178 +396,45 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     const unsubscribe = websocketService.subscribeToEvents(handleWebSocketEvent);
     
     return () => {
-      websocketService.sendPendingReadReceipts(); // Send any pending read receipts before unmounting
+      websocketService.sendPendingReadReceipts();
       if (unsubscribe) unsubscribe();
     };
   }, [contactId]);
   
-  const handleTyping = () => {
-    if (!isTyping) {
-      setIsTyping(true);
-      websocketService.sendTypingIndicator(contactId, true);
-    }
-    
-    if (typingTimeout) {
-      clearTimeout(typingTimeout);
-    }
-    
-    const timeout = setTimeout(() => {
-      setIsTyping(false);
-      websocketService.sendTypingIndicator(contactId, false);
-    }, 2000);
-    
-    setTypingTimeout(timeout);
-  };
-  
-  const handleMessageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setMessage(e.target.value);
-    handleTyping();
-  };
-  
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const fileArray = Array.from(e.target.files);
-      setFiles(prev => [...prev, ...fileArray]);
-      setShowAttachMenu(false);
-    }
-  };
-  
-  const uploadFiles = async (): Promise<any[]> => {
-    if (files.length === 0) return [];
-    
-    setUploading(true);
-    const uploads = files.map(file => {
-      return new Promise<any>((resolve, reject) => {
-        const storageRef = ref(storage, `chats/${user?.id}/${contactId}/${Date.now()}_${file.name}`);
-        const uploadTask = uploadBytesResumable(storageRef, file);
-        
-        uploadTask.on(
-          'state_changed',
-          () => {},
-          (error) => reject(error),
-          async () => {
-            try {
-              const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-              
-              // Determine the primary type (image, video, audio, file)
-              let primaryType = 'file';
-              if (file.type.startsWith('image/')) {
-                primaryType = 'image';
-              } else if (file.type.startsWith('video/')) {
-                primaryType = 'video';
-              } else if (file.type.startsWith('audio/')) {
-                primaryType = 'audio';
-              }
-              
-              resolve({
-                type: primaryType,
-                url: downloadURL,
-                name: file.name,
-                size: file.size,
-                fileType: file.type, // Store the full MIME type for reference
-              });
-            } catch (error) {
-              reject(error);
-            }
-          }
-        );
-      });
-    });
-    
-    try {
-      const attachments = await Promise.all(uploads);
-      setUploading(false);
-      setFiles([]);
-      return attachments;
-    } catch (error) {
-      console.error('Error uploading files:', error);
-      setUploading(false);
-      return [];
-    }
-  };
-  
-  const handleSend = async (e?: React.FormEvent) => {
-    // Prevent form submission from reloading the page
-    if (e) {
-      e.preventDefault();
-    }
-    
-    if (!message.trim() && files.length === 0) {
-      return;
-    }
-
-    setIsSending(true);
-    
-    try {
-      if (actionMode === 'edit' && targetMessageId) {
-        // Edit message logic
-        await editMessage(targetMessageId, contactId, message.trim());
-        toast.success('Message updated');
-      } else if (actionMode === 'reply' && targetMessageId) {
-        // Reply message logic
-        await sendReply(contactId, message.trim(), targetMessageId, await uploadFiles());
-        toast.success('Reply sent');
-      } else {
-        // Send new message logic
-        await useChatStore.getState().sendMessage(contactId, message.trim(), await uploadFiles());
-      }
-
-      // Reset state after sending/editing/replying
-      setTargetMessageId(null);
-      setActionMode('none');
-      setMessage('');
-      setFiles([]);
-
-    } catch (error) {
-      console.error('Error sending/editing/replying message:', error);
-      toast.error('Failed to process message.');
-      setUploading(false); // Ensure uploading state is reset on error
-    } finally {
-      setIsSending(false);
-    }
-  };
-  
-  const removeFile = (index: number) => {
-    setFiles(files.filter((_, i) => i !== index));
-  };
-  
-  const handleAttachmentClick = () => {
-    setShowAttachMenu(!showAttachMenu);
-    setShowEmojiPicker(false);
-  };
-  
-  const handleFileTypeSelect = (type: string) => {
-    if (fileInputRef.current) {
-      fileInputRef.current.setAttribute('accept', type);
-      fileInputRef.current.click();
-    }
-    setShowAttachMenu(false);
-  };
-  
-  // Add handlers for starting edit/reply
-  const handleStartEdit = useCallback((msg: Message) => {
-    setTargetMessageId(msg.id);
-    setActionMode('edit');
-    setMessage(msg.text);
-    inputRef.current?.focus();
-  }, []);
-
-  const handleStartReply = useCallback((msg: Message) => {
-    setTargetMessageId(msg.id);
-    setActionMode('reply');
-    setMessage('');
-    inputRef.current?.focus();
-  }, []);
-
-  // Reset action mode when contact changes
+  // Cancel action when contact changes
   useEffect(() => {
     cancelAction();
   }, [contactId, cancelAction]);
   
-  if (!contact) {
+  // Cancel action if target message disappears
+  useEffect(() => {
+    if (targetMessageId && !currentTargetMessage) {
+      cancelAction();
+    }
+  }, [targetMessageId, currentTargetMessage, cancelAction]);
+  
+  // Check if contacts are loaded
+  if (!contacts) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-white dark:bg-dark-900 transition-colors duration-200">
+        <p className="text-gray-500 dark:text-gray-400">Loading contacts...</p>
+      </div>
+    );
+  }
+  
+  // Check if the contact or group exists
+  if (!isGroupChat && !contact) {
+    // Only show "Contact not found" if it's NOT a group chat AND the contact is missing
     return (
       <div className="flex-1 flex items-center justify-center bg-white dark:bg-dark-900 transition-colors duration-200">
         <p className="text-gray-500 dark:text-gray-400">Contact not found</p>
+      </div>
+    );
+  } else if (isGroupChat && !groupDetails) {
+    // Show loading state if it IS a group chat but details haven't loaded yet
+    return (
+      <div className="flex-1 flex items-center justify-center bg-white dark:bg-dark-900 transition-colors duration-200">
+        <p className="text-gray-500 dark:text-gray-400">Loading group details...</p>
       </div>
     );
   }
@@ -496,60 +503,49 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
         </div>
         <h3 className="text-lg font-medium text-gray-900 dark:text-white">Start a conversation</h3>
         <p className="mt-2 text-gray-500 dark:text-gray-400">
-          Send a message to {contact.contact_display_name} to start chatting
+          Send a message to {isGroupChat ? groupDetails?.name : contact?.contact_display_name || 'them'} to start chatting
         </p>
       </div>
     </div>
   );
   
-  const renderMessages = () => {
-    return (
-      <div className="space-y-2 px-4">
-        {messages.map((msg) => {
-          const isOwn = msg.senderId === user?.id;
-          const msgContact = !isOwn ? contacts.find(c => c.contact_id === msg.senderId) : null;
-          
-          return (
-            <div 
-              key={msg.id}
-              ref={(node) => messageRefCallback(node, msg.id)}
-              data-message-id={msg.id}
-              data-sender-id={msg.senderId}
-              className={`flex items-end ${isOwn ? 'justify-end' : 'justify-start'} gap-2`}
-            >
-              {!isOwn && (
-                <img
-                  src={msgContact?.contact_avatar_url || generateAvatarUrl(msgContact?.contact_display_name || '', 32)}
-                  alt={msgContact?.contact_display_name || 'User'}
-                  className="h-8 w-8 rounded-full object-cover shadow-sm mb-1 flex-shrink-0"
-                />
-              )}
-              <MessageBubble
-                message={msg}
-                isOwn={isOwn}
-                contactId={contactId}
-                onStartEdit={handleStartEdit}
-                onStartReply={handleStartReply}
-              />
-            </div>
-          );
-        })}
+  const renderMessages = () => (
+    <div className="space-y-2 px-4">
+      {messages.map((msg) => {
+        const isOwn = msg.senderId === user?.id;
+        const msgContact = !isOwn ? contacts.find(c => c.contact_id === msg.senderId) : null;
         
-        {isContactTyping && <TypingIndicator />}
-        <div ref={messagesEndRef} />
-      </div>
-    );
-  };
+        return (
+          <div 
+            key={msg.id}
+            ref={(node) => messageRefCallback(node, msg.id)}
+            data-message-id={msg.id}
+            data-sender-id={msg.senderId}
+            className={`flex items-end ${isOwn ? 'justify-end' : 'justify-start'} gap-2`}
+          >
+            {!isOwn && (
+              <img
+                src={msgContact?.contact_avatar_url || generateAvatarUrl(msgContact?.contact_display_name || '', 32)}
+                alt={msgContact?.contact_display_name || 'User'}
+                className="h-8 w-8 rounded-full object-cover shadow-sm mb-1 flex-shrink-0"
+              />
+            )}
+            <MessageBubble
+              message={msg}
+              isOwn={isOwn}
+              contactId={contactId}
+              onStartEdit={handleStartEdit}
+              onStartReply={handleStartReply}
+            />
+          </div>
+        );
+      })}
+      
+      {isContactTyping && <TypingIndicator />}
+      <div ref={messagesEndRef} />
+    </div>
+  );
   
-  const isMessageInputDisabled = (!message.trim() && files.length === 0) || uploading;
-  
-  const handleEmojiClick = (emojiData: EmojiClickData) => {
-    setMessage(prevMessage => prevMessage + emojiData.emoji);
-    setShowEmojiPicker(false);
-    inputRef.current?.focus();
-  };
-  
-  // Define emoji picker categories with correct type
   const emojiCategories = [
     { name: "Recently Used", category: Categories.SUGGESTED },
     { name: "Smileys & People", category: Categories.SMILEYS_PEOPLE },
@@ -562,24 +558,25 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
     { name: "Flags", category: Categories.FLAGS }
   ];
   
-  // Add additional checks to determine if this is a group chat
-  const isGroupChat = conversation?.isGroup || false;
-  const groupDetails = isGroupChat ? groups[contactId] : null;
+  const isMessageInputDisabled = (!message.trim() && files.length === 0) || uploading;
   
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
+      {/* Header */}
       <div className="bg-white dark:bg-dark-800 shadow-sm p-3 flex items-center border-b border-gray-200 dark:border-dark-700">
         <div className="flex-1 flex items-center">
           {isGroupChat ? (
+            // --- Group Chat Header ---
             <div className="flex items-center">
               {groupDetails?.avatar_url ? (
                 <img 
                   src={groupDetails.avatar_url} 
                   alt={groupDetails.name}
-                  className="w-10 h-10 rounded-full mr-3" 
+                  className="w-10 h-10 rounded-full mr-3 object-cover" 
                 />
               ) : (
-                <div className="w-10 h-10 rounded-full bg-primary-600 dark:bg-primary-700 text-white flex items-center justify-center mr-3">
+                // Default group icon
+                <div className="w-10 h-10 rounded-full bg-primary-600 dark:bg-primary-700 text-white flex items-center justify-center mr-3 flex-shrink-0">
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-6 h-6">
                     <path d="M10 9a3 3 0 100-6 3 3 0 000 6zM6 8a2 2 0 11-4 0 2 2 0 014 0zM1.49 15.326a.78.78 0 01-.358-.442 3 3 0 01-.41-1.518c0-1.347.827-2.455 2.063-2.894.766-.323 1.697-.251 2.457-.130a6.297 6.297 0 012.834 1.097 3.997 3.997 0 01-.566 1.298 8.307 8.307 0 00-2.91-1.148c-.563-.091-1.232-.134-1.745.025-.512.158-.945.526-1.027 1.047a1 1 0 01-.117.27zM18 8a2 2 0 11-4 0 2 2 0 014 0zM16.51 15.326a.78.78 0 00.358-.442 3 3 0 00.41-1.518c0-1.347-.827-2.455-2.063-2.894-.766-.323-1.697-.251-2.457-.13a6.297 6.297 0 00-2.834 1.097 3.997 3.997 0 00.566 1.298 8.307 8.307 0 012.91-1.148c.563-.091 1.232-.134 1.745.025.512.158.945.526 1.027 1.047a1 1 0 00.117.27zM7.31 10.13a1.94 1.94 0 00-.128.32c.562.11 1.116.262 1.649.453.383.144.761.316 1.106.524a1.9 1.9 0 00-.11-.336 1.867 1.867 0 00-1.01-.98 1.872 1.872 0 00-1.507.02z" />
                   </svg>
@@ -589,10 +586,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
                 <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{groupDetails?.name || 'Group Chat'}</h2>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   {groupDetails?.members?.length || 0} members
+                  {/* TODO: Add logic to show online members if status is available */} 
                 </p>
               </div>
             </div>
           ) : (
+            // --- Direct Chat Header ---
             <div className="flex items-center">
               <div className="relative w-10 h-10 rounded-full overflow-hidden mr-3 bg-gray-200 dark:bg-dark-700 flex-shrink-0">
                 <img 
@@ -644,20 +643,19 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
         )}
       </div>
       
+      {/* Message Area */}
       <div className="flex-1 overflow-y-auto p-4 relative bg-gray-50 dark:bg-dark-900">
         <div className="space-y-4 pb-2">
           {messages.length === 0 ? renderEmptyChat() : renderMessages()}
         </div>
       </div>
       
-      {/* Input Area Container */}
+      {/* Input Area */}
       <div className="bg-white dark:bg-dark-800 border-t border-gray-200 dark:border-dark-700">
-
-        {/* Action Context Area */}
+        {/* Action Context */}
         {actionMode !== 'none' && currentTargetMessage && (
           <div className="px-3 py-2 border-b border-gray-200 dark:border-dark-700 bg-gray-50 dark:bg-dark-800 text-xs flex items-center justify-between transition-all duration-150 ease-in-out animate-fade-in-fast">
             <div className="flex items-center min-w-0">
-              {/* Icon indicating action type */}
               {actionMode === 'edit' ? (
                 <PencilIcon className="h-4 w-4 text-blue-500 dark:text-blue-400 mr-2 flex-shrink-0" />
               ) : (
@@ -843,12 +841,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ contactId }) => {
                       {member.avatar_url ? (
                         <img 
                           src={member.avatar_url} 
-                          alt={member.display_name}
+                          alt={member.display_name || 'Unknown'}
                           className="w-8 h-8 rounded-full mr-3" 
                         />
                       ) : (
                         <div className="w-8 h-8 rounded-full bg-secondary-100 dark:bg-secondary-800 text-secondary-700 dark:text-secondary-300 flex items-center justify-center mr-3">
-                          {member.display_name.charAt(0).toUpperCase()}
+                          {(member.display_name || '?').charAt(0).toUpperCase()}
                         </div>
                       )}
                       <div className="flex-1">

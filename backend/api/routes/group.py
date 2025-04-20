@@ -35,8 +35,8 @@ async def create_group(
     groups_collection: Collection = db["groups"]
     users_collection: Collection = db["users"]
 
-    # Include creator and deduplicate member list
-    member_ids = list(set([current_user.firebase_uid] + group_data.initial_member_ids))
+    # Combine creator with initial members, ensuring no duplicates
+    member_ids = list(set([current_user.firebase_uid] + (group_data.member_ids or [])))
 
     # Validate members exist
     members_count = await users_collection.count_documents(

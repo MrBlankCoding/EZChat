@@ -30,7 +30,8 @@ const ChatPage = () => {
   // Determine if contactId is a group or direct chat, then set active conversation accordingly
   useEffect(() => {
     const setActiveChat = async () => {
-      if (!contactId) return;
+      // Only run if not loading and contactId is present
+      if (isLoading || !contactId) return;
       
       // Check if this is a group by checking if it exists in groups
       const isGroup = !!groups[contactId];
@@ -66,8 +67,12 @@ const ChatPage = () => {
       }
     };
     
-    setActiveChat();
-  }, [contactId, groups, contacts, setActiveConversation, setActiveGroup, fetchGroup]);
+    // Run setActiveChat only when loading is false
+    if (!isLoading) {
+      setActiveChat();
+    }
+    // Add isLoading to dependency array
+  }, [contactId, groups, contacts, setActiveConversation, setActiveGroup, fetchGroup, isLoading]);
   
   // Function to check and update WebSocket connection status
   const checkWsConnection = async () => {
@@ -104,6 +109,9 @@ const ChatPage = () => {
       if (user) {
         setIsMessagesLoaded(false);
         
+        // Fetch groups first
+        await useChatStore.getState().fetchGroups();
+
         // Fetch all contacts
         await fetchContacts();
         await fetchPendingContacts();

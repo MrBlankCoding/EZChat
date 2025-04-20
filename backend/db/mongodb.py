@@ -165,7 +165,11 @@ from bson import ObjectId  # Import if using ObjectIds directly
 from datetime import datetime
 
 
-async def create_group(group_data: GroupCreate, creator_id: str) -> Optional[GroupInDB]:
+async def create_group(
+    group_data: GroupCreate,
+    creator_id: str,
+    initial_member_ids: Optional[List[str]] = None,  # Add the new parameter
+) -> Optional[GroupInDB]:
     """Creates a new group in the database."""
     groups_collection = get_groups_collection()
     now = datetime.utcnow()
@@ -174,15 +178,18 @@ async def create_group(group_data: GroupCreate, creator_id: str) -> Optional[Gro
     creator_member = GroupMember(user_id=creator_id)
     initial_members = [creator_member]
 
-    # Add other initial members specified in the request
-    for member_id in group_data.initial_member_ids:
-        if member_id != creator_id:  # Avoid adding creator twice
-            # TODO: Validate if member_id exists in the users collection
-            initial_members.append(GroupMember(user_id=member_id))
+    # Add other initial members passed from the API layer
+    if initial_member_ids:
+        for member_id in initial_member_ids:
+            if member_id != creator_id:  # Avoid adding creator twice
+                # TODO: Validate if member_id exists in the users collection
+                initial_members.append(GroupMember(user_id=member_id))
 
     # Create the GroupInDB object
     new_group = GroupInDB(
-        **group_data.dict(exclude={"initial_member_ids"}),
+        **group_data.dict(
+            exclude={"member_ids"}
+        ),  # Exclude member_ids from direct mapping
         creator_id=creator_id,
         members=initial_members,
         created_at=now,

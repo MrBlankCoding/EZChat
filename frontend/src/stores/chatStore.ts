@@ -670,12 +670,49 @@ const useChatStore = create<ChatState>()(
           set({ isLoading: true, error: null });
           
           const response = await apiClient.get('groups');
-          const groups = response.data.reduce((acc: Record<string, Group>, group: Group) => {
-            acc[group.id] = group;
-            return acc;
-          }, {});
+          const fetchedGroups = response.data;
           
-          set({ groups, isLoading: false });
+          // Process groups and update conversations state
+          const updatedGroups: Record<string, Group> = {};
+          const currentConversations = get().conversations;
+          const updatedConversations = { ...currentConversations };
+
+          for (const group of fetchedGroups) {
+            // Ensure ID is normalized
+            if (!group.id && group._id) {
+              group.id = group._id;
+            }
+            if (!group.id) continue; // Skip groups without an ID
+
+            updatedGroups[group.id] = group;
+
+            // Ensure a conversation entry exists for this group
+            if (!updatedConversations[group.id]) {
+              updatedConversations[group.id] = {
+                contactId: group.id,
+                messages: [],
+                isGroup: true,
+                groupId: group.id,
+                isPinned: false, // Default values
+                isUnread: false,
+              };
+            } else {
+              // Update existing group conversation with potentially new details
+              updatedConversations[group.id] = {
+                ...updatedConversations[group.id],
+                isGroup: true,
+                groupId: group.id,
+                // Optionally update groupDetails if stored in conversation
+                // groupDetails: group 
+              };
+            }
+          }
+          
+          set({
+            groups: updatedGroups,
+            conversations: updatedConversations, // Update conversations too
+            isLoading: false
+          });
         } catch (error) {
           set({ 
             error: error instanceof Error ? error.message : 'Failed to fetch groups',

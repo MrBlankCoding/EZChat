@@ -20,10 +20,19 @@ async def create_new_group(
 ):
     """
     Creates a new group. The creator is automatically added as the first member.
-    Optionally include `initial_member_ids` in the request body.
+    Optionally include `member_ids` in the request body to add initial members.
     """
+    # Extract member IDs from the payload, ensuring creator isn't duplicated
+    initial_member_ids = set(group.member_ids or [])
+    initial_member_ids.discard(current_user.id)  # Ensure creator isn't listed twice
+
     # TODO: Add validation to ensure initial_member_ids exist and are valid users
-    created_group = await db.create_group(group_data=group, creator_id=current_user.id)
+
+    created_group = await db.create_group(
+        group_data=group,
+        creator_id=current_user.id,
+        initial_member_ids=list(initial_member_ids),  # Pass the list of other members
+    )
     if not created_group:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
