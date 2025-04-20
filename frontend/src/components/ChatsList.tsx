@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useChatStore } from '../stores/chatStore';
 import { useContactsStore } from '../stores/contactsStore';
 import { useAuthStore } from '../stores/authStore';
-import { MagnifyingGlassIcon, XMarkIcon, EllipsisHorizontalIcon, TrashIcon, EnvelopeIcon, MapPinIcon, UserPlusIcon, PlusIcon } from '@heroicons/react/24/outline';
+import { MagnifyingGlassIcon, XMarkIcon, EllipsisHorizontalIcon, TrashIcon, EnvelopeIcon, MapPinIcon, UserPlusIcon, PlusIcon, ArrowLeftOnRectangleIcon } from '@heroicons/react/24/outline';
 import { MapPinIcon as MapPinIconSolid } from '@heroicons/react/24/solid';
 import NewChatModal from './NewChatModal';
 import NewGroupModal from './NewGroupModal';
@@ -13,6 +13,12 @@ import presenceManager from '../services/presenceManager';
 import { Group } from '../types';
 import { formatRelativeTime } from '../utils/dateUtils';
 import { generateAvatarUrl } from '../utils/avatarUtils';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const ChatsList = () => {
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState(false);
@@ -25,7 +31,12 @@ const ChatsList = () => {
     conversations, 
     activeConversationId, 
     groups,
-    fetchGroups
+    fetchGroups,
+    pinConversation,
+    markConversationAsUnread,
+    deleteConversation,
+    leaveGroup,
+    deleteGroup
   } = useChatStore();
   const { contacts } = useContactsStore();
   
@@ -57,6 +68,7 @@ const ChatsList = () => {
         unreadCount: conversation.messages.filter(
           msg => msg.senderId === contactId && msg.status !== 'read'
         ).length,
+        isUnread: conversation.isUnread || false,
         status: presenceManager.getContactStatus(contactId),
         isPinned: conversation.isPinned || false,
         isGroup: false
@@ -90,9 +102,11 @@ const ChatsList = () => {
         unreadCount: conversation.messages.filter(
           msg => msg.senderId !== user?.id && msg.status !== 'read'
         ).length,
+        isUnread: conversation.isUnread || false,
         memberCount: group.members?.length || 0,
         isPinned: conversation.isPinned || false,
-        isGroup: true
+        isGroup: true,
+        ownerId: group.created_by
       });
     }
     
@@ -192,65 +206,145 @@ const ChatsList = () => {
           </div>
         ) : (
           <div className="divide-y divide-gray-200 dark:divide-dark-700">
-            {chatItems.map((chat) => (
-              <div
-                key={chat.id}
-                className={`p-3 flex items-center cursor-pointer hover:bg-gray-50 dark:hover:bg-dark-800 transition-colors ${
-                  activeConversationId === chat.id ? 'bg-gray-100 dark:bg-dark-700' : ''
-                }`}
-                onClick={() => openChat(chat.id)}
-              >
-                <div className="relative flex-shrink-0">
-                  {chat.avatar ? (
-                    <img src={chat.avatar} alt={chat.name} className="h-12 w-12 rounded-full" />
-                  ) : (
-                    <div className={`h-12 w-12 rounded-full flex items-center justify-center text-white ${
-                      chat.isGroup ? 'bg-primary-600 dark:bg-primary-700' : 'bg-secondary-600 dark:bg-secondary-700'
-                    }`}>
-                      {chat.isGroup ? (
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-6 h-6">
-                          <path d="M10 9a3 3 0 100-6 3 3 0 000 6zM6 8a2 2 0 11-4 0 2 2 0 014 0zM1.49 15.326a.78.78 0 01-.358-.442 3 3 0 01-.41-1.518c0-1.347.827-2.455 2.063-2.894.766-.323 1.697-.251 2.457-.130a6.297 6.297 0 012.834 1.097 3.997 3.997 0 01-.566 1.298 8.307 8.307 0 00-2.91-1.148c-.563-.091-1.232-.134-1.745.025-.512.158-.945.526-1.027 1.047a1 1 0 01-.117.27zM18 8a2 2 0 11-4 0 2 2 0 014 0zM16.51 15.326a.78.78 0 00.358-.442 3 3 0 00.41-1.518c0-1.347-.827-2.455-2.063-2.894-.766-.323-1.697-.251-2.457-.13a6.297 6.297 0 00-2.834 1.097 3.997 3.997 0 00.566 1.298 8.307 8.307 0 012.91-1.148c.563-.091 1.232-.134 1.745.025.512.158.945.526 1.027 1.047a1 1 0 00.117.27zM7.31 10.13a1.94 1.94 0 00-.128.32c.562.11 1.116.262 1.649.453.383.144.761.316 1.106.524a1.9 1.9 0 00-.11-.336 1.867 1.867 0 00-1.01-.98 1.872 1.872 0 00-1.507.02z" />
-                        </svg>
+            {chatItems.map((chat) => {
+              // Log ownerId and userId for groups
+              if (chat.isGroup) {
+                console.log(`Chat: ${chat.name} (ID: ${chat.id}), Owner ID: ${chat.ownerId}, User ID: ${user?.id}, Is Owner? ${chat.ownerId === user?.id}`);
+              }
+              
+              return (
+                <div
+                  key={chat.id}
+                  className={`relative group p-3 flex items-center cursor-pointer hover:bg-gray-50 dark:hover:bg-dark-800 transition-colors ${
+                    activeConversationId === chat.id ? 'bg-gray-100 dark:bg-dark-700' : ''
+                  }`}
+                  onClick={() => openChat(chat.id)}
+                >
+                  <div className="flex items-center flex-1 min-w-0">
+                    <div className="relative flex-shrink-0">
+                      {chat.avatar ? (
+                        <img src={chat.avatar} alt={chat.name} className="h-12 w-12 rounded-full" />
                       ) : (
-                        chat.name.charAt(0).toUpperCase()
+                        <div className={`h-12 w-12 rounded-full flex items-center justify-center text-white ${
+                          chat.isGroup ? 'bg-primary-600 dark:bg-primary-700' : 'bg-secondary-600 dark:bg-secondary-700'
+                        }`}>
+                          {chat.isGroup ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-6 h-6">
+                              <path d="M10 9a3 3 0 100-6 3 3 0 000 6zM6 8a2 2 0 11-4 0 2 2 0 014 0zM1.49 15.326a.78.78 0 01-.358-.442 3 3 0 01-.41-1.518c0-1.347.827-2.455 2.063-2.894.766-.323 1.697-.251 2.457-.130a6.297 6.297 0 012.834 1.097 3.997 3.997 0 01-.566 1.298 8.307 8.307 0 00-2.91-1.148c-.563-.091-1.232-.134-1.745.025-.512.158-.945.526-1.027 1.047a1 1 0 01-.117.27zM18 8a2 2 0 11-4 0 2 2 0 014 0zM16.51 15.326a.78.78 0 00.358-.442 3 3 0 00.41-1.518c0-1.347-.827-2.455-2.063-2.894-.766-.323-1.697-.251-2.457-.13a6.297 6.297 0 00-2.834 1.097 3.997 3.997 0 00.566 1.298 8.307 8.307 0 012.91-1.148c.563-.091 1.232-.134 1.745.025.512.158.945.526 1.027 1.047a1 1 0 00.117.27zM7.31 10.13a1.94 1.94 0 00-.128.32c.562.11 1.116.262 1.649.453.383.144.761.316 1.106.524a1.9 1.9 0 00-.11-.336 1.867 1.867 0 00-1.01-.98 1.872 1.872 0 00-1.507.02z" />
+                            </svg>
+                          ) : (
+                            chat.name.charAt(0).toUpperCase()
+                          )}
+                        </div>
+                      )}
+                      {!chat.isGroup && (
+                        <StatusIndicator status={chat.status} className="absolute bottom-0 right-0 shadow border-2 border-white dark:border-dark-800" />
+                      )}
+                      {chat.isGroup && typeof chat.memberCount === 'number' && chat.memberCount > 0 && (
+                        <div className="absolute -bottom-1 -right-1 bg-gray-100 dark:bg-dark-600 text-xs font-medium text-gray-800 dark:text-gray-300 rounded-full h-5 min-w-[1.25rem] flex items-center justify-center px-1 border border-white dark:border-dark-800">
+                          {chat.memberCount}
+                        </div>
                       )}
                     </div>
-                  )}
-                  {!chat.isGroup && (
-                    <StatusIndicator status={chat.status} className="absolute bottom-0 right-0 shadow border-2 border-white dark:border-dark-800" />
-                  )}
-                  {chat.isGroup && typeof chat.memberCount === 'number' && chat.memberCount > 0 && (
-                    <div className="absolute -bottom-1 -right-1 bg-gray-100 dark:bg-dark-600 text-xs font-medium text-gray-800 dark:text-gray-300 rounded-full h-5 min-w-[1.25rem] flex items-center justify-center px-1 border border-white dark:border-dark-800">
-                      {chat.memberCount}
+                    <div className="ml-3 flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-medium text-gray-900 dark:text-white truncate flex items-center">
+                          {chat.name}
+                          {chat.isPinned && (
+                            <MapPinIconSolid className="w-3 h-3 ml-1 text-gray-500 dark:text-gray-400 flex-shrink-0" />
+                          )}
+                        </p>
+                        <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap ml-1">
+                          {formatTimestamp(chat.timestamp)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                          {chat.lastMessage || (chat.isGroup ? 'New group created' : 'Start chatting')}
+                        </p>
+                        {chat.unreadCount > 0 && (
+                          <NotificationBadge count={chat.unreadCount} />
+                        )}
+                      </div>
                     </div>
-                  )}
-                </div>
-                <div className="ml-3 flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-gray-900 dark:text-white truncate flex items-center">
-                      {chat.name}
-                      {chat.isPinned && (
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3 ml-1 text-gray-500 dark:text-gray-400">
-                          <path d="M10 2.5a1 1 0 011 1v10a1 1 0 11-2 0v-10a1 1 0 011-1z" />
-                          <path d="M5.75 5.5a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z" />
-                        </svg>
-                      )}
-                    </p>
-                    <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap ml-1">
-                      {formatTimestamp(chat.timestamp)}
-                    </span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                      {chat.lastMessage || (chat.isGroup ? 'New group created' : 'Start chatting')}
-                    </p>
-                    {chat.unreadCount > 0 && (
-                      <NotificationBadge count={chat.unreadCount} />
-                    )}
+
+                  <div className="absolute top-1/2 right-2 transform -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger>
+                        <button
+                          className="p-1 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-dark-600 transition-colors"
+                          onClick={(e: React.MouseEvent) => e.stopPropagation()}
+                          aria-label="Chat options"
+                        >
+                          <EllipsisHorizontalIcon className="w-5 h-5" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        className="w-48 bg-white dark:bg-dark-700 border border-gray-200 dark:border-dark-600 rounded-md shadow-lg z-50"
+                        align="end"
+                      >
+                        <DropdownMenuItem
+                          className="flex items-center px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-600 cursor-pointer"
+                          onSelect={() => pinConversation(chat.id, !chat.isPinned)}
+                        >
+                          {chat.isPinned ? (
+                            <>
+                              <MapPinIcon className="w-4 h-4 mr-2" /> Unpin Chat
+                            </>
+                          ) : (
+                            <>
+                              <MapPinIcon className="w-4 h-4 mr-2" /> Pin Chat
+                            </>
+                          )}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="flex items-center px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-600 cursor-pointer"
+                          onSelect={() => markConversationAsUnread(chat.id, !chat.isUnread)}
+                        >
+                          <EnvelopeIcon className="w-4 h-4 mr-2" />
+                          {chat.isUnread ? 'Mark as Read' : 'Mark as Unread'}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            console.log(`Dropdown selected for chat ID: ${chat.id}, isGroup: ${chat.isGroup}, ownerId: ${chat.ownerId}, userId: ${user?.id}`);
+                            if (chat.isGroup) {
+                              if (chat.ownerId === user?.id) {
+                                console.log('Calling deleteGroup');
+                                deleteGroup(chat.id);
+                              } else {
+                                console.log('Calling leaveGroup');
+                                leaveGroup(chat.id);
+                              }
+                            } else {
+                              console.log('Calling deleteConversation');
+                              deleteConversation(chat.id);
+                            }
+                          }}
+                          className="px-0 py-0"
+                        >
+                          {chat.isGroup ? (
+                            chat.ownerId === user?.id ? (
+                              <div className="flex items-center px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 cursor-pointer">
+                                <TrashIcon className="w-4 h-4 mr-2" /> Delete Group
+                              </div>
+                            ) : (
+                              <div className="flex items-center px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-dark-600 cursor-pointer">
+                                <ArrowLeftOnRectangleIcon className="w-4 h-4 mr-2" /> Leave Group
+                              </div>
+                            )
+                          ) : (
+                            <div className="flex items-center px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 cursor-pointer">
+                              <TrashIcon className="w-4 h-4 mr-2" /> Delete Chat
+                            </div>
+                          )}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

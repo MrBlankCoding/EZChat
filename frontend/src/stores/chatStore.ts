@@ -92,6 +92,7 @@ interface ChatState {
   leaveGroup: (groupId: string) => Promise<boolean>;
   sendGroupMessage: (groupId: string, text: string, attachments?: any[]) => Promise<string | undefined>;
   setActiveGroup: (groupId: string) => void;
+  deleteGroup: (groupId: string) => Promise<boolean>;
 }
 
 const useChatStore = create<ChatState>()(
@@ -670,6 +671,7 @@ const useChatStore = create<ChatState>()(
           set({ isLoading: true, error: null });
           
           const response = await apiClient.get('groups');
+          console.log('Raw response from GET /groups:', response.data);
           const fetchedGroups = response.data;
           
           // Process groups and update conversations state
@@ -967,15 +969,65 @@ const useChatStore = create<ChatState>()(
       
       leaveGroup: async (groupId: string) => {
         const { user } = useAuthStore.getState();
+        console.log(`Attempting to leave group: ${groupId}, User: ${user?.id}`);
         if (!user) {
           set({ error: 'User not authenticated', isLoading: false });
           return false;
         }
         
+        const userIdToRemove = user.id; // Use current user's ID for removal
+
         try {
           set({ isLoading: true, error: null });
           
-          await apiClient.delete(`groups/${groupId}/members/me`);
+          // Call the existing endpoint to remove the specific user (self)
+          await apiClient.delete(`groups/${groupId}/members/${userIdToRemove}`); 
+          console.log(`Successfully called API to leave group: ${groupId} (removed user ${userIdToRemove})`); 
+          
+          // Remove group from state (same logic as before)
+          set(state => {
+            const { [groupId]: _, ...remainingGroups } = state.groups;
+            const { [groupId]: __, ...remainingConversations } = state.conversations;
+            
+            return {
+              groups: remainingGroups,
+              conversations: remainingConversations,
+              isLoading: false,
+              activeConversationId: state.activeConversationId === groupId ? null : state.activeConversationId
+            };
+          });
+          
+          return true;
+        } catch (error) {
+          console.error(`Failed to leave group ${groupId}:`, error); 
+          set({ 
+            error: error instanceof Error ? error.message : 'Failed to leave group',
+            isLoading: false
+          });
+          return false;
+        }
+      },
+      
+      deleteGroup: async (groupId: string) => {
+        const { user } = useAuthStore.getState();
+        console.log(`Attempting to delete group: ${groupId}, User: ${user?.id}`);
+        if (!user) {
+          set({ error: 'User not authenticated', isLoading: false });
+          return false;
+        }
+
+        const groupToDelete = get().groups[groupId];
+        if (!groupToDelete || groupToDelete.created_by !== user.id) {
+          console.warn(`Delete group check failed: Group found: ${!!groupToDelete}, Is owner: ${groupToDelete?.created_by === user.id}`);
+          set({ error: 'User is not the owner or group not found', isLoading: false });
+          return false; // Optional: Check ownership here too for safety
+        }
+        
+        try {
+          set({ isLoading: true, error: null });
+          
+          await apiClient.delete(`groups/${groupId}`);
+          console.log(`Successfully called API to delete group: ${groupId}`);
           
           // Remove group from state
           set(state => {
@@ -986,15 +1038,16 @@ const useChatStore = create<ChatState>()(
               groups: remainingGroups,
               conversations: remainingConversations,
               isLoading: false,
-              // If active conversation is the group being left, clear it
+              // If active conversation is the group being deleted, clear it
               activeConversationId: state.activeConversationId === groupId ? null : state.activeConversationId
             };
           });
           
           return true;
         } catch (error) {
+          console.error(`Failed to delete group ${groupId}:`, error);
           set({ 
-            error: error instanceof Error ? error.message : 'Failed to leave group',
+            error: error instanceof Error ? error.message : 'Failed to delete group',
             isLoading: false
           });
           return false;

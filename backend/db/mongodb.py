@@ -232,7 +232,13 @@ async def get_user_groups(user_id: str) -> List[GroupInDB]:
     try:
         cursor = groups_collection.find({"members.user_id": user_id})
         async for group_doc in cursor:
-            groups.append(GroupInDB(**group_doc))
+            logger.debug(f"Raw group doc from DB for user {user_id}: {group_doc}")
+            try:
+                groups.append(GroupInDB(**group_doc))
+            except Exception as parse_error:
+                logger.error(
+                    f"Error parsing group doc (ID: {group_doc.get('_id')}) into GroupInDB: {parse_error}"
+                )
         return groups
     except Exception as e:
         logger.error(f"Error fetching groups for user {user_id}: {e}")
